@@ -3,12 +3,12 @@
 Quickstart
 ==========
 
-This page gives a good introduction in how to get started with Glances.
-Glances offers 3 modes:
+This page gives a good introduction to how to get started with Glances.
+Glances offers multiple modes:
 
-- Standalone
-- Client/Server
-- Web server
+- Standalone (TUI)
+- Server (REST API and Web UI) / Client
+- Fetch
 
 Standalone Mode
 ---------------
@@ -24,61 +24,134 @@ Glances should start (press 'q' or 'ESC' to exit):
 
 .. image:: _static/screenshot-wide.png
 
-It is also possible to display RAW JSON stats directly to stdout using:
+It is also possible to display RAW (Python) stats directly to stdout using:
 
 .. code-block:: console
 
-    $ glances --stdout cpu.user,mem.used,load
-    cpu.user: 30.7
-    mem.used: 3278204928
-    load: {'cpucore': 4, 'min1': 0.21, 'min5': 0.4, 'min15': 0.27}
-    cpu.user: 3.4
-    mem.used: 3275251712
-    load: {'cpucore': 4, 'min1': 0.19, 'min5': 0.39, 'min15': 0.27}
+    $ glances --stdout cpu.user,mem.used,load,network.wlp2s0.bytes_recv
+    cpu.user: 25.0
+    mem.used: 954605568
+    load: {'min1': 2.09, 'min5': 1.01, 'min15': 0.72, 'cpucore': 4}
+    network.wlp2s0.bytes_recv: 13479
+    cpu.user: 42.6
+    mem.used: 1033232384
+    load: {'min1': 2.24, 'min5': 1.06, 'min15': 0.74, 'cpucore': 4}
+    network.wlp2s0.bytes_recv: 12868
     ...
 
-or in a CSV format thanks to the stdout-csv option:
+or in a CSV format thanks to the stdout-csv option (key not supported in this mode):
 
 .. code-block:: console
 
     $ glances --stdout-csv now,cpu.user,mem.used,load
-    now,cpu.user,mem.used,load.cpucore,load.min1,load.min5,load.min15
-    2018-12-08 22:04:20 CEST,7.3,5948149760,4,1.04,0.99,1.04
-    2018-12-08 22:04:23 CEST,5.4,5949136896,4,1.04,0.99,1.04
+    now.iso,now.custom,cpu.user,mem.used,load.min1,load.min5,load.min15,load.cpucore
+    2026-10-11T15:12:05+00:00,2026-10-11 15:12:05 UTC,47.4,1062043648,2.22,1.08,0.74,4
     ...
 
-Note: It will display one line per stat per refresh.
-
-Client/Server Mode
-------------------
-
-If you want to remotely monitor a machine, called ``server``, from
-another one, called ``client``, just run on the server:
+or as a JSON format thanks to the stdout-json option (attribute not supported in this mode):
 
 .. code-block:: console
 
-    server$ glances -s
+    $ glances --stdout-json cpu,load
+    {"cpu": {"user": 50.0, "system": 6.3, "idle": 43.7, "nice": 0.0, "iowait": 0.0, "irq": 0.0, "steal": 0.0, "guest": 0.0, "total": 56.3, "cpucore": 4, ...}, "load": {"min1": 2.22, "min5": 1.08, "min15": 0.74, "cpucore": 4}}
+    ...
 
-and on the client:
+Note: ``--stdout`` displays one line per stat per refresh, ``--stdout-json``
+one JSON object per refresh and ``--stdout-csv`` one line per refresh.
+
+Use ``--stop-after <n>`` to stop after n refreshes.
+
+Server Mode (REST API and Web UI)
+---------------------------------
+
+.. image:: _static/screenshot-web.png
+
+If you want to remotely monitor a machine called ``server``, from any
+device with a web browser, just run the server with the ``-s`` option
+(``-w`` is the same mode, kept from Glances v4):
+
+.. code-block:: console
+
+    server$ glances -s -B 0.0.0.0
+
+then, on the client, enter the following URL in your favorite web browser:
+
+::
+
+    http://@server:61208
+
+where ``@server`` is the IP address or hostname of the server.
+
+The server runs headless (no TUI). It serves the RESTful API on ``/api/5``
+(see :ref:`api_restful`) and the Web UI on ``/``. Use ``--disable-webui``
+to only serve the API.
+
+The default bind address is ``127.0.0.1``: the server only answers on the
+local machine. Use ``-B ADDRESS`` (or ``bind_address`` in the ``[outputs]``
+section of the configuration file) to listen on another interface,
+``0.0.0.0`` for all the IPv4 interfaces. The default TCP port is ``61208``,
+it can be changed with ``-p PORT`` (or ``port`` in ``[outputs]``).
+
+To change the refresh rate of the page, add the period in seconds
+to the URL. For example, to refresh the page every ``10``
+seconds:
+
+::
+
+    http://@server:61208/?refresh=10
+
+The Glances web interface follows responsive web design principles.
+
+Here's a screenshot from Chrome on Android:
+
+.. image:: _static/screenshot-web2.png
+
+Security — DNS rebinding protection
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A server bound to a loopback address (the default ``127.0.0.1``) only
+accepts requests whose HTTP ``Host`` header is ``localhost``, ``127.0.0.1``
+or ``[::1]``. A server bound to another address applies no ``Host``
+filtering and logs a warning at startup.
+
+**Set the accepted Host values** with ``webui_allowed_hosts`` in the
+``[outputs]`` section of ``glances.conf``, for example behind a reverse
+proxy that forwards its own ``Host`` or for any deployment on a
+non-loopback interface:
+
+.. code-block:: ini
+
+    [outputs]
+    webui_allowed_hosts=localhost,127.0.0.1,myserver.example.com
+
+Requests whose ``Host`` header does not match any of the listed patterns
+are rejected with ``400 Bad Request``. Wildcards are supported, for example
+``*.example.com``.
+
+Client Mode
+-----------
+
+You can also display the stats of a remote Glances server in your terminal.
+Run the server as described above (``glances -s -B 0.0.0.0``) and, on the
+client:
 
 .. code-block:: console
 
     client$ glances -c @server
 
-where ``@server`` is the IP address or hostname of the server.
-
-In server mode, you can set the bind address with ``-B ADDRESS`` and
-the listening TCP port with ``-p PORT``.
+where ``@server`` is the IP address or hostname of the server. It is also
+possible to give ``@server:port`` or an ``http(s)://`` URL (for a server
+behind a TLS reverse proxy).
 
 In client mode, you can set the TCP port of the server with ``-p PORT``.
 
-Default binding address is ``0.0.0.0`` (Glances will listen on all the
-available network interfaces) and TCP port is ``61209``.
+The client only speaks to a Glances v5 server (REST API ``/api/5``); the
+Glances v4 XML-RPC server is not supported anymore.
 
 In client/server mode, limits are set by the server side.
 
-Central client
-^^^^^^^^^^^^^^
+Central Glances Browser
+^^^^^^^^^^^^^^^^^^^^^^^
 
 .. image:: _static/browser.png
 
@@ -91,46 +164,56 @@ Example:
 .. code-block:: ini
 
     [serverlist]
-    # Define the static servers list
+    # Define columns (comma separated list of <plugin>:<field>:(<key>)) to grab/display
+    # Default is: system:hr_name,load:min5,cpu:total,mem:percent
+    # You can also add stats with key, like sensors:value:Ambient
+    columns=system:hr_name,load:min5,cpu:total,mem:percent,memswap:percent
+    # Define the static servers list (the port defaults to 61208)
     server_1_name=xps
     server_1_alias=xps
-    server_1_port=61209
+    server_1_port=61208
     server_2_name=win
     server_2_port=61235
+    # The name can also be an http(s):// URL
+    server_3_name=https://glances.example.com
 
-Glances can also detect and display all Glances servers available on
-your network via the ``zeroconf`` protocol (not available on Windows):
+Glances can also detect and display all Glances v5 servers available on
+your network via the ``zeroconf`` protocol (``browser`` extra needed):
 
-To start the central client, use the following option:
+To start the TUI Central Glances Browser, use the following option:
 
 .. code-block:: console
 
     client$ glances --browser
 
-.. note::
-
-    Use ``--disable-autodiscover`` to disable the auto discovery mode.
-
 When the list is displayed, you can navigate through the Glances servers with
-up/down keys. It is also possible to sort the server using:
+up/down keys and open one with ENTER. It is also possible to sort the server using:
+
 - '1' is normal (do not sort)
-- '2' is using sorting with ascending order (ONLINE > SNMP > PROTECTED > OFFLINE > UNKNOWN)
-- '3' is using sorting with descending order (UNKNOW > OFFLINE > PROTECTED > SNMP > ONLINE)
+- '2' is using sorting by status (UNKNOWN > OFFLINE > PROTECTED > UNSUPPORTED > ONLINE)
+- '3' is using sorting by status in reverse order (ONLINE > UNSUPPORTED > PROTECTED > OFFLINE > UNKNOWN)
 
-SNMP
-^^^^
+``UNSUPPORTED`` means that something answers on the port, but not the Glances
+v5 API (a Glances v4 server, for example).
 
-As an experimental feature, if Glances server is not detected by the
-client, the latter will try to grab stats using the ``SNMP`` protocol:
+A server discovered on the network is listed as ``<name> (zeroconf <address>)``
+and opened at that address: anyone on the network can announce under any name,
+so check the address before typing a password (it is sent over clear HTTP).
+An announcement that uses the name or alias of a ``[serverlist]`` server is
+ignored.
+
+To start the WebUI Central Glances Browser, use the following option:
 
 .. code-block:: console
 
-    client$ glances -c @snmpserver
+    client$ glances --browser -s
+
+Open the URL (/browser) and click on the server to display stats. The
+servers list is also available on the ``/api/5/serverslist`` endpoint.
 
 .. note::
-    Stats grabbed by SNMP request are limited and OS dependent.
-    A SNMP server should be installed and configured...
 
+    Use ``--disable-autodiscover`` to disable the auto-discovery mode.
 
 IPv6
 ^^^^
@@ -138,56 +221,39 @@ IPv6
 Glances is ``IPv6`` compatible. Just use the ``-B ::`` option to bind to
 all IPv6 addresses.
 
-Web Server Mode
----------------
+How do you protect your server with a login/password ?
+------------------------------------------------------
 
-.. image:: _static/screenshot-web.png
-
-If you want to remotely monitor a machine, called ``server``, from any
-device with a web browser, just run the server with the ``-w`` option:
+Generate a password hash with the ``--set-password`` option:
 
 .. code-block:: console
 
-    server$ glances -w
+    $ glances --set-password
+    Password:
+    Confirm:
 
-then on the client enter the following URL in your favorite web browser:
+    Paste this value into [outputs] password of your glances.conf:
 
-::
+    <salt>$<hash>
 
-    http://@server:61208
+and paste it in the ``[outputs]`` section of the Glances configuration file
+(``~/.config/glances/glances.conf`` on GNU Linux operating system).
+By default, the login is ``glances`` but you can change it with the
+``username`` key:
 
-where ``@server`` is the IP address or hostname of the server.
+.. code-block:: ini
 
-To change the refresh rate of the page, just add the period in seconds
-at the end of the URL. For example, to refresh the page every ``10``
-seconds:
+    [outputs]
+    password=<salt>$<hash>
+    # Optional, default is glances
+    #username=glances
 
-::
+The REST API and the Web UI then require this login/password (HTTP Basic
+authentication or a JWT bearer token from ``/api/5/token``).
 
-    http://@server:61208/10
-
-The Glances web interface follows responsive web design principles.
-
-Here's a screenshot from Chrome on Android:
-
-.. image:: _static/screenshot-web2.png
-
-How to protect your server (or Web server) with a login/password ?
-------------------------------------------------------------------
-
-You can set a password to access to the server using the ``--password``.
-By default, the login is ``glances`` but you can change it with
-``--username``.
-
-If you want, the SHA password will be stored in ``<login>.pwd`` file (in 
-the same folder where the Glances configuration file is stored, so 
-~/.config/glances/ on GNU Linus operating system).
-
-Next time your run the server/client, password will not be asked. To set a
-specific username you can used the -u <username> option.
-
-It is also possible to set the default password in the Glances configuration 
-file:
+On the client side, use ``-u <username>`` to set the login and
+``--password`` to be prompted for the server's password. It is also
+possible to set the client passwords in the Glances configuration file:
 
 .. code-block:: ini
 
@@ -199,3 +265,22 @@ file:
     # Additionally (and optionally) a default password could be defined
     localhost=mylocalhostpassword
     default=mydefaultpassword
+
+Fetch mode
+----------
+
+It is also possible to get and share a quick look of a machine using the
+``fetch`` mode. In this mode, current stats are display on the console in
+a fancy way.
+
+.. code-block:: console
+
+    $ glances --fetch
+
+Results look like this:
+
+.. image:: _static/screenshot-fetch.png
+
+It is also possible to use a custom template with the ``--fetch --fetch-template </path/to/template.jinja>`` options.
+
+Have a look to the :ref:`fetch documentation page<fetch>` to learn how to create your own template.

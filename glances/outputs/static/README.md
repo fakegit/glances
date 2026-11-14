@@ -1,30 +1,73 @@
-# How to contribute?
+# Focus on the Glances Web User Interface
 
-In order to build the assets of the Web UI, you'll need [npm](https://docs.npmjs.com/getting-started/what-is-npm).
+In order to build the assets of the Web UI, you'll need [NPM](https://docs.npmjs.com/getting-started/what-is-npm).
+
+NPM is a package manager for JavaScript related to [Node.js](https://nodejs.org/en/).
+
+NodeJS should be installed/updated on your system.
+
+## Pre-requisites
+
+### Install NodeJS
+
+Example on Ubuntu OS:
+
+```bash
+sudo apt install nodejs npm
+```
+
+### Upgrade NodeJS
+
+Example on Ubuntu OS:
+
+```bash
+sudo apt update
+sudo apt install nodejs npm
+sudo npm install -g n
+sudo n lts
+hash -r
+```
+
+## Build Glances WebUI
 
 You must run the following command from the `glances/outputs/static/` directory.
 
-## Install dependencies
-
 ```bash
-$ npm install
+cd glances/outputs/static/
 ```
 
-## Build assets
+### Install dependencies
+
+```bash
+npm ci
+```
+
+### Update dependencies
+
+To update all the dependencies to the latest version and package.json and package-lock.json,
+you can use the command "npm update --save":
+
+```bash
+npm update --save
+npx npm-check-updates -u
+npm install
+```
+
+### Build assets
 
 Run the build command to build assets once :
 
 ```bash
-$ npm run build
+npm run build
 ```
 
 or use the watch command to rebuild only modified files :
 
 ```bash
-$ npm run watch
+npm run watch
 ```
 
-# Anatomy
+## Anatomy
 
 ```bash
 static
@@ -37,7 +80,7 @@ static
 |
 |--- public # path where builds are put
 |
-|--- templates (bottle)
+|--- templates
 ```
 
 ## Data

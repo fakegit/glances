@@ -4,7 +4,7 @@ Applications Monitoring Process
 ===============================
 
 Thanks to Glances and its AMP module, you can add specific monitoring to
-running processes. AMPs are defined in the Glances [configuration file](http://glances.readthedocs.io/en/stable/config.html).
+running processes. AMPs are defined in the Glances :ref:`configuration file<config>`.
 
 You can disable AMP using the ``--disable-plugin amps`` option or pressing the
 ``A`` key.
@@ -50,7 +50,7 @@ less than countmin):
 .. image:: ../_static/amp-python-warning.png
 
 If the regex option is not defined, the AMP will be executed every refresh
-time and the process count will not be displayed (countmin and countmax will 
+time and the process count will not be displayed (countmin and countmax will
 be ignored).
 
 For example:
@@ -61,7 +61,30 @@ For example:
     enable=false
     refresh=30
     one_line=false
-    command=sysctl net.netfilter.nf_conntrack_count;sysctl net.netfilter.nf_conntrack_max
+    command=sysctl net.netfilter.nf_conntrack_count && sysctl net.netfilter.nf_conntrack_max
+
+Note: for multiple command, please use the '&&'' separator.
+
+Pipes and redirections can also be used (see the security considerations
+below), but they are not interpreted with the ``--disable-config-exec``
+option. In this case, create a shell script with your command:
+
+.. code-block:: ini
+
+    $ cat /usr/local/bin/mycommand.sh
+    #!/bin/sh
+    ps -aux | wc -l
+
+and use it in the amps:
+
+.. code-block:: ini
+
+    [amp_amptest]
+    enable=true
+    regex=.*
+    refresh=15
+    one_line=false
+    command=/usr/local/bin/mycommand.sh
 
 User defined AMP
 ----------------
@@ -90,17 +113,85 @@ the Glances UI:
 You can force Glances to display the result in one line setting
 ``one_line`` to true.
 
+Security considerations
+-----------------------
+
+AMP ``command`` and ``service_cmd`` values are read verbatim from the
+configuration file and executed. The execution helper interprets three
+shell-like operators:
+
+- ``&&`` to chain commands
+- ``|`` to pipe one command output into the next one
+- ``>`` to redirect the output to a file
+
+These operators are convenient but mean that **anyone able to edit the
+Glances configuration file can run arbitrary commands or write to arbitrary
+files** through an AMP section.
+
+For system services or any deployment where the configuration file is not
+fully trusted, start Glances with the ``--disable-config-exec`` option. This
+option makes AMP commands run as a single process: ``&&``, ``|`` and
+``>`` are then treated as literal arguments and are no longer interpreted, so
+an AMP command can neither chain commands, pipe, nor write to an arbitrary
+file.
+
+.. code-block:: console
+
+    $ glances --disable-config-exec
+
+Note: with ``--disable-config-exec`` set, AMP commands that rely on these
+operators stop working. Move such logic into a dedicated shell script and
+point the ``command`` option to that script instead.
+
+.. warning::
+
+    ``--disable-config-exec`` removes the shell operators, it does not stop
+    the commands themselves from running, and it is not a sandbox. A command
+    that starts a shell or an interpreter, such as ``sh -c "..."`` or
+    ``python -c "..."``, still interprets whatever it is given, operators
+    included. The option protects against a monitored value or a template
+    smuggling an operator into a command line; it does not make an untrusted
+    configuration file safe. Keep ``glances.conf`` writable by its owner only
+    (root for a system service).
+
+An AMP command that hangs blocks that AMP indefinitely. The optional
+``timeout`` key bounds it:
+
+.. code-block:: ini
+
+    [amp_dropbox]
+    enable=true
+    regex=.*dropbox.*
+    refresh=3
+    command=dropbox status
+    timeout=10
+
+Without the key there is no timeout, which is the historical behaviour. Note
+that with ``&&``-chained commands the timeout applies to each sub-command, not
+to the chain as a whole.
+
+A hung AMP command without ``timeout`` does not just stall that one AMP: AMP
+commands run in the interpreter's shared worker-thread pool, which is also
+used by other parts of Glances. Enough AMPs stuck on a command that never
+returns can starve that pool and delay unrelated plugins. Setting
+``timeout=`` is recommended for any AMP command that touches a network
+resource, a remote mount, or a daemon socket — anything that can block
+indefinitely rather than fail fast.
+
 Embedded AMP
 ------------
 
 Glances provides some specific AMP scripts (replacing the ``command``
 line). You can write your own AMP script to fill your needs. AMP scripts
-are located in the ``amps`` folder and should be named ``glances_*.py``.
-An AMP script define an Amp class (``GlancesAmp``) with a mandatory
+are Python packages located in the ``glances/amps`` folder (for example
+``glances/amps/nginx/__init__.py``). An AMP script define an ``Amp`` class
+(inheriting from ``GlancesAmp``) with a mandatory
 update method. The update method call the ``set_result`` method to set
 the AMP return string. The return string is a string with one or more
 line (\n between lines). To enable it, the configuration file section
-should be named ``[amp_*]``.
+should be named ``[amp_<package name>]`` (for example ``[amp_nginx]``).
+If no package matches the section name, the default AMP (``command`` key)
+is used.
 
 For example, if you want to enable the Nginx AMP, the following
 definition should do the job (Nginx AMP is provided by the Glances team

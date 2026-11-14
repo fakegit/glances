@@ -4,8 +4,8 @@ Prometheus
 ==========
 
 You can export statistics to a ``Prometheus`` server through an exporter.
-When the *--export-prometheus* is used, Glances creates a Prometheus exporter
-listening on <host:port> (define in the Glances configuration file).
+When the *--export prometheus* is used, Glances creates a Prometheus exporter
+listening on <host:port> (defined in the Glances configuration file).
 
 .. code-block:: ini
 
@@ -15,7 +15,12 @@ listening on <host:port> (define in the Glances configuration file).
     prefix=glances
     labels=src:glances
 
-Note: you can use dynamc fields for the label (ex: labels=system:`uname -s`)
+``host``, ``port`` and ``labels`` are mandatory. ``prefix`` defaults to
+``glances``.
+
+.. note::
+
+    When running Glances in a container, set ``host=0.0.0.0`` in the Glances configuration file.
 
 and run Glances with:
 

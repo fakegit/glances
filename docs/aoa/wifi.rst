@@ -3,15 +3,12 @@
 Wi-Fi
 =====
 
-*Availability: Linux*
+*Availability: Linux only*
+
+The signal strength is read over nl80211 (the same data as ``iw dev <interface> link``).
+When nl80211 is not available, Glances falls back to the ``/proc/net/wireless`` file.
 
 .. image:: ../_static/wifi.png
-
-Glances displays the Wi-Fi hotspot names and signal quality. If Glances
-is ran as root, then all the available hotspots are displayed.
-
-.. note::
-    You need to install the ``wireless-tools`` package on your system.
 
 In the configuration file, you can define signal quality thresholds:
 
@@ -19,15 +16,12 @@ In the configuration file, you can define signal quality thresholds:
 - ``"Good"`` quality between -85 and -60dBm
 - ``"Excellent"`` between -60 and -40dBm
 
-It's also possible to disable the scan on a specific interface from the
-configuration file (``[wifi]`` section). For example, if you want to
-hide the loopback interface (lo) and all the virtual docker interfaces:
+Thresholds for the signal quality can be defined in the configuration file:
 
 .. code-block:: ini
 
     [wifi]
-    hide=lo,docker.*
-    # Define SIGNAL thresholds in dBm (lower is better...)
+    disable=False
     careful=-65
     warning=-75
     critical=-85

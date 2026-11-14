@@ -1,330 +1,510 @@
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python
 #
-# This file is part of Glances.
+# Glances - An eye on your system
 #
-# Copyright (C) 2019 Nicolargo <nicolas@nicolargo.com>
+# SPDX-FileCopyrightText: 2026 Nicolas Hennion <nicolas@nicolargo.com>
 #
-# Glances is free software; you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# SPDX-License-Identifier: LGPL-3.0-only
 #
-# Glances is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-"""Manage the configuration file."""
+"""Glances v5 configuration loader.
 
+Loading model (v4-aligned, **single config file**):
+
+1. Hardcoded DEFAULTS — codebase baseline.
+2. **Exactly one** glances.conf file:
+   - If ``-C <path>`` is passed, that file is used (no search, no
+     fallback merging). A missing CLI path logs a WARNING and the
+     loader proceeds with DEFAULTS only.
+   - Otherwise the loader walks the v4 search path and stops at the
+     first existing file:
+       a. ``$XDG_CONFIG_HOME/glances/glances.conf`` (or
+          ``~/.config/glances/glances.conf``)
+       b. ``/etc/glances/glances.conf``
+   - A chosen file that cannot be read or parsed raises
+     ``ConfigFileError`` (fail closed — never skipped).
+3. ``GLANCES_<SECTION>__<KEY>=<value>`` env vars overlay on top — kept
+   because env-driven overrides are useful for containers / CI and are
+   orthogonal to the config-file question.
+
+Option names keep the case they are written with in the file, so a key
+built from an item name (``/srv/Data_percent_critical``) only matches that
+item. A lookup with no exact match falls back to a case-insensitive one:
+lower-case keys, upper-case ones (``CRITICAL=90``) and the env overlay
+(always lower-cased) keep working.
+
+Note: prior versions of this loader merged keys across all available
+config files (the "layered overlay" design). That introduced surprising
+cross-file inheritance — e.g. a legacy v4-era ``~/.config/glances/glances.conf``
+silently leaking ``[memswap] careful=50`` onto v5's new opt-in
+``memswap.sin``/``sout`` fields. The single-file model mirrors v4
+``glances/config.py::config_file_paths`` (first existing wins).
+
+Public API:
+- ``get(section, option, default: T) -> T``   (typed accessor, T inferred)
+- ``get_value(...)``                          (v4 alias)
+- ``has_section(section) / sections()``       (introspection)
+- ``as_dict() / as_dict_secure()``            (full / redacted dump)
+- ``as_dict_public()``                        (the WebUI keys only)
+- ``reload()``                                (re-run the resolution)
+- ``loaded_sources``                          (the **at most one** file
+                                              actually read)
+"""
+
+from __future__ import annotations
+
+import configparser
+import logging
 import os
-import sys
-import multiprocessing
-from io import open
 import re
+from pathlib import Path
+from typing import Any, TypeVar
 
-from glances.compat import ConfigParser, NoOptionError, NoSectionError, system_exec
-from glances.globals import BSD, LINUX, MACOS, SUNOS, WINDOWS
-from glances.logger import logger
+from glances.globals import trusted_by_root
 
+logger = logging.getLogger(__name__)
 
-def user_config_dir():
-    r"""Return the per-user config dir (full path).
+T = TypeVar("T")
 
-    - Linux, *BSD, SunOS: ~/.config/glances
-    - macOS: ~/Library/Application Support/glances
-    - Windows: %APPDATA%\glances
-    """
-    if WINDOWS:
-        path = os.environ.get('APPDATA')
-    elif MACOS:
-        path = os.path.expanduser('~/Library/Application Support')
-    else:
-        path = os.environ.get('XDG_CONFIG_HOME') or os.path.expanduser('~/.config')
-    if path is None:
-        path = ''
-    else:
-        path = os.path.join(path, 'glances')
-
-    return path
+# Credentials embedded in the authority part of an URL value
+# (``scheme://user:password@host``) — CVE-2026-68520. The lookbehind anchors
+# on ``://`` so only a real URL authority is scrubbed; a value that merely
+# contains an '@' is left untouched. The class admits '@' and the match is
+# greedy, so it runs to the LAST '@' of the authority: a password holding an
+# unencoded '@' (`u:p@ss@host`) is redacted whole, as `urlparse` and requests
+# split it.
+_URL_CREDENTIALS_RE = re.compile(r"(?<=://)[^/?#\s]+@")
 
 
-def user_cache_dir():
-    r"""Return the per-user cache dir (full path).
-
-    - Linux, *BSD, SunOS: ~/.cache/glances
-    - macOS: ~/Library/Caches/glances
-    - Windows: {%LOCALAPPDATA%,%APPDATA%}\glances\cache
-    """
-    if WINDOWS:
-        path = os.path.join(os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA'),
-                            'glances', 'cache')
-    elif MACOS:
-        path = os.path.expanduser('~/Library/Caches/glances')
-    else:
-        path = os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'),
-                            'glances')
-
-    return path
+def _coerce_bool(raw: str) -> bool:
+    """Helper to coerce config values to bool, accepting common string representations."""
+    s = raw.strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Cannot interpret {raw!r} as boolean")
 
 
-def system_config_dir():
-    r"""Return the system-wide config dir (full path).
-
-    - Linux, SunOS: /etc/glances
-    - *BSD, macOS: /usr/local/etc/glances
-    - Windows: %APPDATA%\glances
-    """
-    if LINUX or SUNOS:
-        path = '/etc'
-    elif BSD or MACOS:
-        path = '/usr/local/etc'
-    else:
-        path = os.environ.get('APPDATA')
-    if path is None:
-        path = ''
-    else:
-        path = os.path.join(path, 'glances')
-
-    return path
+def _coerce_list(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-class Config(object):
+class ConfigFileError(Exception):
+    """The selected glances.conf exists but cannot be read or parsed."""
 
-    """This class is used to access/read config file, if it exists.
 
-    :param config_dir: the path to search for config file
-    :type config_dir: str or None
-    """
+class GlancesConfig:
+    """Layered configuration loader for Glances v5."""
 
-    def __init__(self, config_dir=None):
-        self.config_dir = config_dir
-        self.config_filename = 'glances.conf'
-        self._loaded_config_file = None
+    # Hardcoded baseline. Phase 0 keeps this minimal; later phases will add
+    # the keys they reference. The DEFAULTS contract is: every key read by
+    # the codebase must have a default here OR be passed explicitly via the
+    # `default=` argument of get().
+    DEFAULTS: dict[str, dict[str, Any]] = {
+        "global": {
+            "refresh_time": 2,
+        },
+        "outputs": {
+            "api_doc": True,
+        },
+        # NOTE: per-plugin `refresh` cadences are deliberately NOT listed here.
+        # They live on the plugin classes as
+        # `GlancesPluginBase.DEFAULT_REFRESH_TIME`, so adding a plugin never
+        # requires editing this central dict. A user's `[<plugin>] refresh`
+        # still wins over the class value — see
+        # `AsyncScheduler._resolve_refresh_time`.
+    }
 
-        # Re patern for optimize research of `foo`
-        self.re_pattern = re.compile(r'(\`.+?\`)')
+    # Substring match (case-insensitive) on the option name. Any option whose
+    # name contains one of these tokens is redacted by as_dict_secure() —
+    # CVE-2026-32609. Substring match is intentionally permissive (over-redact
+    # rather than under-redact).
+    SECRET_KEYS: set[str] = {
+        "password",
+        "passphrase",
+        "token",
+        "api_key",
+        "secret",
+        "ssl_key",
+        "ssl_cert",
+        "snmp_community",
+        "snmp_user",
+        "snmp_authkey",
+        "snmp_privkey",
+        "username",
+        "uri",  # may embed credentials inline (CVE-2026-32633)
+    }
 
-        try:
-            self.parser = ConfigParser(interpolation=None)
-        except TypeError:
-            self.parser = ConfigParser()
-            
-        self.read()
+    # Exact match (case-insensitive) on the option name — CVE-2026-68520.
+    # These cannot join SECRET_KEYS: that set is matched as a substring, so
+    # "user" would also redact the `user_careful` / `user_warning` CPU and
+    # load thresholds, which are not credentials. Exact match reproduces the
+    # intent of the v4 `\buser\b` pattern.
+    SECRET_KEYS_EXACT: set[str] = {
+        "user",
+        "login",
+    }
 
-    def config_file_paths(self):
-        r"""Get a list of config file paths.
+    # Sections left out of the redacted view entirely, as v4 does
+    # (`glances/config.py`, `_SECURE_BLOCKED_SECTIONS`). `[passwords]` maps a
+    # host name to that server's clear password (read by `-c` and
+    # `--browser`): its keys are host names, which no key pattern can
+    # recognise, and even they are not the caller's business. The v5 port had
+    # dropped this block; the P3-7 verification pass found it.
+    BLOCKED_SECTIONS: set[str] = {"passwords"}
 
-        The list is built taking into account of the OS, priority and location.
+    SECRET_REDACTED: str = "***"
 
-        * custom path: /path/to/glances
-        * Linux, SunOS: ~/.config/glances, /etc/glances
-        * *BSD: ~/.config/glances, /usr/local/etc/glances
-        * macOS: ~/Library/Application Support/glances, /usr/local/etc/glances
-        * Windows: %APPDATA%\glances
+    # The only options `/api/5/config` serves while the API is unauthenticated:
+    # the ones the WebUI reads (`static/js/api.js`, `resolveConfig()`).
+    # An allowlist, because a denylist on option names cannot see a secret
+    # inside a free-form value: a token in an `*_action` command line, a
+    # password in an AMP command, an API key in a query string (security
+    # audit 2026-10-04, M1).
+    PUBLIC_OPTIONS: dict[str, frozenset[str]] = {
+        "global": frozenset({"refresh"}),
+        "outputs": frozenset({"theme", "max_processes_display", "api_doc"}),
+    }
 
-        The config file will be searched in the following order of priority:
-            * /path/to/file (via -C flag)
-            * user's home directory (per-user settings)
-            * system-wide directory (system-wide settings)
+    # Class-level paths, indirected for testability (patch.object friendly).
+    SYSTEM_CONFIG_PATH: Path = Path("/etc/glances/glances.conf")
+    USER_CONFIG_RELATIVE: Path = Path("glances/glances.conf")
+
+    ENV_PREFIX: str = "GLANCES_"
+    ENV_SEPARATOR: str = "__"  # split on first occurrence
+
+    def __init__(self, cli_config_path: str | None = None) -> None:
+        self._cli_config_path: str | None = cli_config_path
+        self._loaded_sources: list[Path] = []
+        self._merged: dict[str, dict[str, Any]] = {}
+        # Per section: lower-cased option name -> the stored option names.
+        self._lower_index: dict[str, dict[str, list[str]]] = {}
+        self._ambiguous_warned: set[tuple[str, str]] = set()
+        self._load()
+
+    # ------------------------------------------------------------------ load
+
+    def _load(self) -> None:
+        self._loaded_sources = []
+        self._merged = {}
+        self._ambiguous_warned = set()
+
+        # 1. Defaults — codebase baseline. Always applied; not a "file
+        # merge", just the set of keys the codebase guarantees to read.
+        self._overlay_dict(self.DEFAULTS)
+
+        # 2. Exactly one glances.conf — see module docstring for the
+        # resolution rules. Missing-file paths are silent no-ops.
+        chosen = self._resolve_config_file()
+        if chosen is not None:
+            self._overlay_file(chosen)
+
+        # 3. Environment variable overlay (orthogonal to the file
+        # question — useful for containers / CI / per-run overrides).
+        self._overlay_env()
+
+        # Built once here rather than on every lookup: get() is on the hot
+        # path (thresholds and actions are resolved every cycle).
+        self._lower_index = {}
+        for section, options in self._merged.items():
+            index = self._lower_index[section] = {}
+            for key in options:
+                index.setdefault(key.lower(), []).append(key)
+
+    def _resolve_config_file(self) -> Path | None:
+        """Pick the single glances.conf to load, or ``None``.
+
+        Honours ``-C`` first (any path, no search); otherwise walks the
+        v4 search path (user → system) and returns the first existing
+        entry. A non-existing ``-C`` path is fatal: the file the operator
+        named may hold the ``[outputs] password``, and a typo must not start
+        the server open (security audit 2026-10-17, A10). Missing search
+        entries are silent (operating without a config file is valid —
+        the DEFAULTS layer suffices). As root, a user file not owned by
+        root or writable by others is skipped with a warning: under
+        ``sudo -E`` it is the invoking user's file, and its ``*_action``
+        commands would run as root (security audit 2026-10-17, B-9).
         """
-        paths = []
+        if self._cli_config_path:
+            path = Path(self._cli_config_path)
+            if path.is_file():
+                return path
+            raise ConfigFileError(f"Config file {path} (from -C / --config) does not exist")
 
-        if self.config_dir:
-            paths.append(self.config_dir)
+        for path in self._search_paths():
+            if not path.is_file():
+                continue
+            if path != self.SYSTEM_CONFIG_PATH and not trusted_by_root(path):
+                logger.warning(
+                    "Config file %s ignored: running as root, it must be owned by root and not writable by others",
+                    path,
+                )
+                continue
+            return path
+        return None
 
-        paths.append(os.path.join(user_config_dir(), self.config_filename))
-        paths.append(os.path.join(system_config_dir(), self.config_filename))
+    def _search_paths(self) -> list[Path]:
+        """v4-style search list: user config first, then system."""
+        return [self._user_config_path(), self.SYSTEM_CONFIG_PATH]
 
-        return paths
+    def _user_config_path(self) -> Path:
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        if xdg:
+            return Path(xdg) / self.USER_CONFIG_RELATIVE
+        return Path.home() / ".config" / self.USER_CONFIG_RELATIVE
 
-    def read(self):
-        """Read the config file, if it exists. Using defaults otherwise."""
-        for config_file in self.config_file_paths():
-            logger.info('Search glances.conf file in {}'.format(config_file))
-            if os.path.exists(config_file):
-                try:
-                    with open(config_file, encoding='utf-8') as f:
-                        self.parser.read_file(f)
-                        self.parser.read(f)
-                    logger.info("Read configuration file '{}'".format(config_file))
-                except UnicodeDecodeError as err:
-                    logger.error("Can not read configuration file '{}': {}".format(config_file, err))
-                    sys.exit(1)
-                # Save the loaded configuration file path (issue #374)
-                self._loaded_config_file = config_file
-                break
+    def _overlay_dict(self, data: dict[str, dict[str, Any]]) -> None:
+        for section, options in data.items():
+            self._merged.setdefault(section, {})
+            for key, value in options.items():
+                self._merged[section][key] = value
 
-        # Globals
-        if not self.parser.has_section('global'):
-            self.parser.add_section('global')
-        self.set_default('global', 'strftime_format', '')
+    def _overlay_file(self, path: Path) -> None:
+        if not path.is_file():
+            return
+        parser = configparser.ConfigParser(interpolation=None)
+        # Keep the option names as written: `/srv/Data` and `/srv/data` are
+        # two mount points, and their keys must not collide.
+        parser.optionxform = str  # type: ignore[method-assign]
+        # Fail closed: skipping a file that exists would silently drop keys
+        # such as `[outputs] password` (API exposed unauthenticated) — v4
+        # stops too. The open() is inside the try: ConfigParser.read(path)
+        # would swallow a permission error (Snap confinement included).
+        try:
+            with open(path, encoding="utf-8") as f:
+                parser.read_file(f)
+        except (OSError, UnicodeDecodeError, configparser.Error) as e:
+            raise ConfigFileError(f"Cannot load config file {path}: {e}") from e
+        for section in parser.sections():
+            target = self._merged.setdefault(section, {})
+            for key, value in parser.items(section):
+                target[key] = value
+        self._loaded_sources.append(path)
 
-        # check_update
-        if not self.parser.has_section('global'):
-            self.parser.add_section('global')
-        self.set_default('global', 'check_update', 'false')
+    def _overlay_env(self) -> None:
+        for env_key, env_value in os.environ.items():
+            if not env_key.startswith(self.ENV_PREFIX):
+                continue
+            stripped = env_key[len(self.ENV_PREFIX) :]
+            if self.ENV_SEPARATOR not in stripped:
+                continue
+            section, _, key = stripped.partition(self.ENV_SEPARATOR)
+            section = section.lower()
+            key = key.lower()
+            if not section or not key:
+                continue
+            options = self._merged.setdefault(section, {})
+            # An environment variable name cannot carry the case of the
+            # option it overrides: replace that option whatever its case in
+            # the file.
+            for stored in [k for k in options if k.lower() == key]:
+                del options[stored]
+            options[key] = env_value
 
-        # Quicklook
-        if not self.parser.has_section('quicklook'):
-            self.parser.add_section('quicklook')
-        self.set_default_cwc('quicklook', 'cpu')
-        self.set_default_cwc('quicklook', 'mem')
-        self.set_default_cwc('quicklook', 'swap')
+    # ------------------------------------------------------------------ read
 
-        # CPU
-        if not self.parser.has_section('cpu'):
-            self.parser.add_section('cpu')
-        self.set_default_cwc('cpu', 'user')
-        self.set_default_cwc('cpu', 'system')
-        self.set_default_cwc('cpu', 'steal')
-        # By default I/O wait should be lower than 1/number of CPU cores
-        iowait_bottleneck = (1.0 / multiprocessing.cpu_count()) * 100.0
-        self.set_default_cwc('cpu', 'iowait',
-                             [str(iowait_bottleneck - (iowait_bottleneck * 0.20)),
-                              str(iowait_bottleneck - (iowait_bottleneck * 0.10)),
-                              str(iowait_bottleneck)])
-        # Context switches bottleneck identification #1212
-        ctx_switches_bottleneck = (500000 * 0.10) * multiprocessing.cpu_count()
-        self.set_default_cwc('cpu', 'ctx_switches',
-                             [str(ctx_switches_bottleneck - (ctx_switches_bottleneck * 0.20)),
-                              str(ctx_switches_bottleneck - (ctx_switches_bottleneck * 0.10)),
-                              str(ctx_switches_bottleneck)])
+    def _lookup(self, section: str, option: str) -> Any:
+        """Return the raw value of `option` in `section`, or None if absent.
 
-        # Per-CPU
-        if not self.parser.has_section('percpu'):
-            self.parser.add_section('percpu')
-        self.set_default_cwc('percpu', 'user')
-        self.set_default_cwc('percpu', 'system')
+        The option name is matched exactly first, then case-insensitively,
+        so a lower-case key (the only form v4 and the env overlay know) still
+        reaches a mixed-case item (a `~/Videos` folder, a `/Volumes/Data`
+        mount point). When several stored names differ from `option` only by
+        case, none of them is picked: the option is treated as absent and a
+        warning is logged once.
+        """
+        options = self._merged.get(section, {})
+        raw = options.get(option)
+        if raw is not None:
+            return raw
+        lower = option.lower()
+        candidates = self._lower_index.get(section, {}).get(lower, [])
+        if len(candidates) == 1:
+            return options.get(candidates[0])
+        if len(candidates) > 1 and (section, lower) not in self._ambiguous_warned:
+            self._ambiguous_warned.add((section, lower))
+            logger.warning(
+                "Config option %r in section [%s] is ignored: %s differ from it only by case and none matches "
+                "it exactly. Write the key with the exact case of the item.",
+                option,
+                section,
+                ", ".join(candidates),
+            )
+        return None
 
-        # Load
-        if not self.parser.has_section('load'):
-            self.parser.add_section('load')
-        self.set_default_cwc('load', cwc=['0.7', '1.0', '5.0'])
+    def get(self, section: str, option: str, default: T) -> T:
+        """Return option from section coerced to type(default), else default."""
+        raw = self._lookup(section, option)
+        if raw is None:
+            return default
+        return self._coerce(raw, type(default))
 
-        # Mem
-        if not self.parser.has_section('mem'):
-            self.parser.add_section('mem')
-        self.set_default_cwc('mem')
+    def get_value(self, section: str, option: str, default: T = None) -> T:  # type: ignore[assignment]
+        """v4 compatibility alias for get().
 
-        # Swap
-        if not self.parser.has_section('memswap'):
-            self.parser.add_section('memswap')
-        self.set_default_cwc('memswap')
+        Unlike `get()`, a caller may omit `default` entirely — mirroring
+        v4's `GlancesConfig.get_value(section, option, default=None)`,
+        which several verbatim-reused v4 helper classes call without a
+        third argument (e.g. `glances/folder_list.py::FolderList.
+        __set_folder_list` reads `folder_N_path` with no default). When
+        `default` is left at `None`, no type coercion is applied — the
+        raw configparser string (or `None` if the option is absent) is
+        returned as-is, matching v4's untyped passthrough. Passing an
+        explicit non-None default is unchanged: it still delegates to
+        `get()` for typed coercion.
+        """
+        if default is None:
+            return self._lookup(section, option)
+        return self.get(section, option, default)
 
-        # NETWORK
-        if not self.parser.has_section('network'):
-            self.parser.add_section('network')
-        self.set_default_cwc('network', 'rx')
-        self.set_default_cwc('network', 'tx')
+    def get_float_value(self, section: str, option: str, default: float = 0.0) -> float:
+        """v4 compatibility accessor — mirrors `GlancesConfig.get_float_value`.
 
-        # FS
-        if not self.parser.has_section('fs'):
-            self.parser.add_section('fs')
-        self.set_default_cwc('fs')
+        Returns `float(default)` when the option is ABSENT, and `float(raw)`
+        when it is present. A present-but-non-numeric value therefore raises
+        `ValueError`, exactly like v4's `ConfigParser.getfloat`.
 
-        # Sensors
-        if not self.parser.has_section('sensors'):
-            self.parser.add_section('sensors')
-        self.set_default_cwc('sensors', 'temperature_core', cwc=['60', '70', '80'])
-        self.set_default_cwc('sensors', 'temperature_hdd', cwc=['45', '52', '60'])
-        self.set_default_cwc('sensors', 'battery', cwc=['80', '90', '95'])
+        That exception is load-bearing, not incidental:
+        `GlancesAmp.load_config()` (reused verbatim from v4) calls this method
+        on EVERY key of an `[amp_*]` section and relies on `ValueError` to
+        route the string and comma-list values (`regex`, `command`, `enable`,
+        `one_line`, …) to its fallback branch. Swallowing it and returning the
+        default would coerce all of them to 0.0 and silently break every AMP.
+        """
+        raw = self._lookup(section, option)
+        if raw is None:
+            return float(default)
+        return float(raw)
 
-        # Process list
-        if not self.parser.has_section('processlist'):
-            self.parser.add_section('processlist')
-        self.set_default_cwc('processlist', 'cpu')
-        self.set_default_cwc('processlist', 'mem')
+    def get_bool_value(self, section: str, option: str, default: bool = True) -> bool:
+        """v4 compatibility accessor — mirrors `GlancesConfig.get_bool_value`.
+
+        Returns `bool(default)` when the option is ABSENT (v4 defaults to
+        True, not False), and the parsed value when it is present. A
+        present-but-non-boolean value therefore raises `ValueError`, exactly
+        like v4's `ConfigParser.getboolean`.
+
+        That exception is load-bearing, like `get_float_value`'s:
+        `GlancesWebList` (reused verbatim by `ports/model.py`) catches it
+        so that `web_N_ssl_verify` can hold either a boolean or the path to a
+        CA bundle. Swallowing it and returning the default would silently
+        turn every custom bundle into `verify=True`.
+        """
+        raw = self._lookup(section, option)
+        if raw is None:
+            return bool(default)
+        return _coerce_bool(raw) if isinstance(raw, str) else bool(raw)
+
+    @staticmethod
+    def _coerce(raw: Any, target_type: type) -> Any:
+        # Native types in DEFAULTS flow through unchanged.
+        if not isinstance(raw, str):
+            return raw
+        if target_type is str:
+            return raw
+        if target_type is bool:
+            return _coerce_bool(raw)
+        if target_type is int:
+            return int(raw)
+        if target_type is float:
+            return float(raw)
+        if target_type is list:
+            return _coerce_list(raw)
+        raise TypeError(f"Unsupported config target type {target_type!r} for value {raw!r}")
+
+    # ------------------------------------------------------------ introspect
+
+    def has_section(self, section: str) -> bool:
+        return section in self._merged
+
+    def sections(self) -> list[str]:
+        return list(self._merged.keys())
+
+    def section_keys(self, section: str) -> list[str]:
+        """Return the option names declared in ``section`` (empty list if
+        the section is missing). Used by hot-path callers that need to
+        introspect which keys exist without forcing them through
+        ``as_dict()`` (which deep-copies). The names keep the case they are
+        written with: compare them lower-cased, or look one up with
+        ``get()``."""
+        return list(self._merged.get(section, {}).keys())
+
+    def items(self, section: str) -> list[tuple[str, Any]]:
+        """Return the `(option, value)` pairs of `section` (empty if absent).
+
+        v4 compatibility accessor: `GlancesAmp.load_config()` iterates
+        `config.items(amp_section)` to discover an AMP's keys, which are
+        arbitrary (`status_url`, `systemctl_cmd`, any user-defined option)
+        and therefore cannot be enumerated statically. The option names keep
+        the case they are written with, as `section_keys()`.
+        """
+        return list(self._merged.get(section, {}).items())
+
+    def as_dict(self) -> dict[str, dict[str, Any]]:
+        return {s: dict(opts) for s, opts in self._merged.items()}
+
+    def as_dict_secure(self) -> dict[str, dict[str, Any]]:
+        """Return the merged config with secrets redacted, for unauthenticated callers.
+
+        - A secret-like option name is redacted entirely (CVE-2026-32609).
+        - Credentials embedded in an URL value are redacted even when the
+          option name looks innocuous (CVE-2026-68520).
+        - A `BLOCKED_SECTIONS` section (`[passwords]`) is left out, as in v4.
+        """
+        result: dict[str, dict[str, Any]] = {}
+        for section, options in self._merged.items():
+            if section.lower() in self.BLOCKED_SECTIONS:
+                continue
+            result[section] = {key: self._secure_value(key, value) for key, value in options.items()}
+        return result
+
+    def as_dict_public(self) -> dict[str, dict[str, Any]]:
+        """Return only the `PUBLIC_OPTIONS`, for an unauthenticated API.
+
+        A section with none of its public options set is left out. Each
+        option is resolved as `get()` resolves it, so a `Refresh=` key (the
+        refresh Glances runs with) still reaches the WebUI, and it is served
+        under its allowlisted name: no other name ever leaves.
+        """
+        result: dict[str, dict[str, Any]] = {}
+        for section, keys in self.PUBLIC_OPTIONS.items():
+            options = {k: v for k in sorted(keys) if (v := self._lookup(section, k)) is not None}
+            if options:
+                result[section] = options
+        return result
+
+    @classmethod
+    def _secure_value(cls, key: str, value: Any) -> Any:
+        """Redact a single option: whole value on a secret key, else URL credentials.
+
+        A non-string value (boolean flag, port, refresh rate) cannot carry a
+        credential and is returned unchanged — CVE-2026-68520.
+        """
+        if cls._is_secret_key(key):
+            return cls.SECRET_REDACTED
+        if not isinstance(value, str):
+            return value
+        return _URL_CREDENTIALS_RE.sub(f"{cls.SECRET_REDACTED}@", value)
+
+    @classmethod
+    def _is_secret_key(cls, key: str) -> bool:
+        key_lower = key.lower()
+        if key_lower in cls.SECRET_KEYS_EXACT:
+            return True
+        return any(token in key_lower for token in cls.SECRET_KEYS)
+
+    # ---------------------------------------------------------------- reload
+
+    def reload(self) -> None:
+        """Re-run the full layered overlay chain.
+
+        Public hook for hot-reload. The polling loop that calls this every 5s
+        for safe-to-reload keys is deferred to Phase 4 (mtime polling task).
+        """
+        self._load()
 
     @property
-    def loaded_config_file(self):
-        """Return the loaded configuration file."""
-        return self._loaded_config_file
-
-    def as_dict(self):
-        """Return the configuration as a dict"""
-        dictionary = {}
-        for section in self.parser.sections():
-            dictionary[section] = {}
-            for option in self.parser.options(section):
-                dictionary[section][option] = self.parser.get(section, option)
-        return dictionary
-
-    def sections(self):
-        """Return a list of all sections."""
-        return self.parser.sections()
-
-    def items(self, section):
-        """Return the items list of a section."""
-        return self.parser.items(section)
-
-    def has_section(self, section):
-        """Return info about the existence of a section."""
-        return self.parser.has_section(section)
-
-    def set_default_cwc(self, section,
-                        option_header=None,
-                        cwc=['50', '70', '90']):
-        """Set default values for careful, warning and critical."""
-        if option_header is None:
-            header = ''
-        else:
-            header = option_header + '_'
-        self.set_default(section, header + 'careful', cwc[0])
-        self.set_default(section, header + 'warning', cwc[1])
-        self.set_default(section, header + 'critical', cwc[2])
-
-    def set_default(self, section, option,
-                    default):
-        """If the option did not exist, create a default value."""
-        if not self.parser.has_option(section, option):
-            self.parser.set(section, option, default)
-
-    def get_value(self, section, option,
-                  default=None):
-        """Get the value of an option, if it exists.
-
-        If it did not exist, then return the default value.
-
-        It allows user to define dynamic configuration key (see issue#1204)
-        Dynamic vlaue should starts and end with the ` char
-        Example: prefix=`hostname`
-        """
-        ret = default
-        try:
-            ret = self.parser.get(section, option)
-        except (NoOptionError, NoSectionError):
-            pass
-
-        # Search a substring `foo` and replace it by the result of its exec
-        if ret is not None:
-            try:
-                match = self.re_pattern.findall(ret)
-                for m in match:
-                    ret = ret.replace(m, system_exec(m[1:-1]))
-            except TypeError:
-                pass
-        return ret
-
-    def get_int_value(self, section, option, default=0):
-        """Get the int value of an option, if it exists."""
-        try:
-            return self.parser.getint(section, option)
-        except (NoOptionError, NoSectionError):
-            return int(default)
-
-    def get_float_value(self, section, option, default=0.0):
-        """Get the float value of an option, if it exists."""
-        try:
-            return self.parser.getfloat(section, option)
-        except (NoOptionError, NoSectionError):
-            return float(default)
-
-    def get_bool_value(self, section, option, default=True):
-        """Get the bool value of an option, if it exists."""
-        try:
-            return self.parser.getboolean(section, option)
-        except (NoOptionError, NoSectionError):
-            return bool(default)
+    def loaded_sources(self) -> list[Path]:
+        """Files actually read, in load order."""
+        return list(self._loaded_sources)

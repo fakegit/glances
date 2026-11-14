@@ -1,0 +1,288 @@
+.. _api_mcp:
+
+MCP (Model Context Protocol) server
+=====================================
+
+Glances can expose its system monitoring data through a
+`Model Context Protocol <https://modelcontextprotocol.io>`_ (MCP) server,
+allowing AI assistants (Claude, Cursor, VS Code Copilot, …) to query
+real-time metrics and generate structured analyses directly from their chat
+interface.
+
+The MCP server is mounted alongside the standard RESTful API when the web
+server is started with the ``--enable-mcp`` flag.  It serves two transports:
+**Streamable HTTP** (the current MCP transport) and **Server-Sent Events**
+(SSE, for older clients), so any MCP-compatible client can connect to it.
+
+Requirements
+------------
+
+The ``mcp`` Python package must be installed:
+
+.. code-block:: bash
+
+    pip install 'glances[mcp]'
+
+Start the MCP server
+--------------------
+
+Add ``--enable-mcp`` to any Glances web-server command:
+
+.. code-block:: bash
+
+    glances -w --enable-mcp
+
+The startup log gives both endpoints, and a client command to connect:
+
+.. code-block:: text
+
+    MCP server available at http://localhost:61208/mcp (Streamable HTTP) and http://localhost:61208/mcp/sse (SSE)
+    MCP client example (OpenCode): opencode mcp add glances --url http://localhost:61208/mcp
+
+============================================ =====================================
+Endpoint                                     Transport
+============================================ =====================================
+``http://localhost:61208/mcp``               Streamable HTTP
+``http://localhost:61208/mcp/sse``           SSE
+============================================ =====================================
+
+When the server is bound to all interfaces (``0.0.0.0``), the log shows
+``localhost``: by default the MCP endpoint only accepts loopback ``Host``
+headers. To reach it under another name or address, add that name to
+``[outputs] mcp_allowed_hosts`` in ``glances.conf``; Glances warns at startup
+when the bind address is not in that list.
+
+To change the mount path (default: ``/mcp``):
+
+.. code-block:: bash
+
+    glances -w --enable-mcp --mcp-path /monitoring/mcp
+
+A path that would shadow a route the server already serves (``/``, ``/api``,
+``/docs``, ``/static``…) is refused: Glances logs a warning and mounts MCP at
+``/mcp`` instead.
+
+Both flags have a configuration-file equivalent in the ``[outputs]`` section
+of ``glances.conf``. The command-line flags take precedence:
+
+.. code-block:: ini
+
+    [outputs]
+    # Same as --enable-mcp (still requires -w / -s)
+    enable_mcp=true
+    # Same as --mcp-path
+    mcp_path=/mcp
+    # Host headers the MCP endpoint accepts (default: localhost,127.0.0.1)
+    #mcp_allowed_hosts=localhost,127.0.0.1,myserver.example.com
+
+Authentication
+--------------
+
+The MCP endpoint inherits the authentication policy of the web server.
+When ``[outputs] password`` is set in ``glances.conf`` (to a hash made with
+``glances --set-password``), every MCP request must carry valid credentials —
+either **HTTP Basic Auth** or a **JWT Bearer token** (see :ref:`api_restful`
+for how to obtain a JWT token).
+
+When no password is configured the MCP endpoint is open. The ``--password``
+command-line option does not protect the server: it only prompts for a remote
+server's password in client mode.
+
+Resources
+---------
+
+MCP resources are read-only data sources that a client can list and read.
+
+Static resources
+~~~~~~~~~~~~~~~~
+
+============================================ ================================================
+URI                                          Description
+============================================ ================================================
+``glances://plugins``                        JSON list of all active plugin names
+``glances://stats``                          JSON object of all plugins' current statistics
+``glances://limits``                         JSON object of alert thresholds for all plugins
+``glances://info``                           JSON object of every plugin's field schema
+                                             (unit, description, rate or counter)
+``glances://alerts/incidents``               Alert incidents, ongoing first:
+                                             ``{is_initializing, incidents}``, the same
+                                             payload as ``/api/5/alert/incidents``
+============================================ ================================================
+
+``glances://stats/alert`` is the raw, bounded transition log (as
+``/api/5/alert``): read ``glances://alerts/incidents`` to know which alerts are
+active. While ``is_initializing`` is true, an empty ``incidents`` list means
+Glances is still warming up, not that the system is healthy.
+
+Resource templates (parameterised)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+============================================== =====================================================
+URI template                                   Description
+============================================== =====================================================
+``glances://stats/{plugin}``                   Current statistics for one plugin
+``glances://stats/{plugin}/history``           Historical time-series for one plugin
+``glances://limits/{plugin}``                  Alert thresholds for one plugin
+``glances://info/{plugin}``                    Field schema for one plugin
+============================================== =====================================================
+
+Replace ``{plugin}`` with any name returned by ``glances://plugins``
+(e.g. ``cpu``, ``mem``, ``network``, ``processlist``, …).
+
+Tools
+-----
+
+MCP tools are read-only queries the model can call on its own. They take the
+filters the REST API takes as query parameters, so a client can fetch only what
+it needs instead of a whole plugin payload. They change nothing on the host.
+
+=============================== ===================================== ===============================================
+Tool                            Parameters                            REST equivalent
+=============================== ===================================== ===============================================
+``get_plugin_history``          ``plugin``, ``nb`` (0 = all),         ``/api/5/{plugin}/history?nb=&field=&item=``
+                                ``field``, ``item``
+``get_plugin_field``            ``plugin``, ``field``, ``item``       ``/api/5/{plugin}/{field}`` and
+                                                                      ``/api/5/{plugin}/{field}/{item}``
+``get_plugin_top``              ``plugin``, ``n``                     ``/api/5/{plugin}/top/{n}``
+``get_plugin_items_by_value``   ``plugin``, ``field``, ``value``      ``/api/5/{plugin}/{field}/value/{value}``
+=============================== ===================================== ===============================================
+
+The query tools return ``null`` while a plugin has not published its first
+statistics. An unknown plugin, field or item is reported as a tool error.
+
+Prompts
+-------
+
+MCP prompts are pre-built analysis templates that embed live Glances data
+into a system prompt ready to be sent to an LLM.
+
++-----------------------------+-----------------------------------------------------+-------------------+
+| Prompt name                 | Description                                         | Parameters        |
++=============================+=====================================================+===================+
+| ``system_health_summary``   | Overall health report: CPU, memory, swap,           | *(none)*          |
+|                             | load, filesystems, network                          |                   |
++-----------------------------+-----------------------------------------------------+-------------------+
+| ``alert_analysis``          | Analysis of alert incidents with remediation steps  | ``level``         |
+|                             |                                                     | (``warning`` /    |
+|                             |                                                     | ``critical`` /    |
+|                             |                                                     | ``all``)          |
++-----------------------------+-----------------------------------------------------+-------------------+
+| ``top_processes_report``    | Report on the most CPU-intensive processes          | ``nb``            |
+|                             |                                                     | (integer,         |
+|                             |                                                     | default ``10``)   |
++-----------------------------+-----------------------------------------------------+-------------------+
+| ``storage_health``          | Disk usage and I/O statistics analysis              | *(none)*          |
++-----------------------------+-----------------------------------------------------+-------------------+
+
+Connect an MCP client
+---------------------
+
+OpenCode
+~~~~~~~~
+
+OpenCode speaks Streamable HTTP only: give it the ``/mcp`` URL, not ``/mcp/sse``.
+
+.. code-block:: bash
+
+    opencode mcp add glances --url http://localhost:61208/mcp
+
+For a password-protected server, add the credentials as a header:
+
+.. code-block:: bash
+
+    opencode mcp add glances --url http://localhost:61208/mcp --header 'Authorization=Basic <base64(user:password)>'
+
+Claude Code
+~~~~~~~~~~~
+
+Claude Code speaks Streamable HTTP: give it the ``/mcp`` URL.
+
+.. code-block:: bash
+
+    claude mcp add --transport http glances http://localhost:61208/mcp
+
+For a password-protected server, add the credentials as a header:
+
+.. code-block:: bash
+
+    claude mcp add --transport http glances http://localhost:61208/mcp --header 'Authorization: Basic <base64(user:password)>'
+
+Claude Desktop
+~~~~~~~~~~~~~~
+
+``claude_desktop_config.json`` only declares servers Claude Desktop starts
+itself as a local command. Reach the Glances endpoint through the
+`mcp-remote <https://www.npmjs.com/package/mcp-remote>`_ bridge (requires
+Node.js) by adding this entry to the file
+(``~/Library/Application Support/Claude/claude_desktop_config.json`` on macOS,
+``%APPDATA%\Claude\claude_desktop_config.json`` on Windows):
+
+.. code-block:: json
+
+    {
+      "mcpServers": {
+        "glances": {
+          "command": "npx",
+          "args": ["mcp-remote", "http://localhost:61208/mcp"]
+        }
+      }
+    }
+
+``mcp-remote`` refuses plain ``http://`` URLs to hosts other than ``localhost``
+and ``127.0.0.1``: add ``"--allow-http"`` to ``args`` for such a server on a
+trusted network, or put Glances behind HTTPS.
+
+For a password-protected server, pass the header through an environment
+variable:
+
+.. code-block:: json
+
+    {
+      "mcpServers": {
+        "glances": {
+          "command": "npx",
+          "args": [
+            "mcp-remote", "http://localhost:61208/mcp",
+            "--header", "Authorization:${GLANCES_AUTH}"
+          ],
+          "env": {
+            "GLANCES_AUTH": "Basic <base64(user:password)>"
+          }
+        }
+      }
+    }
+
+Python MCP client (programmatic access)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import asyncio
+    from mcp.client.sse import sse_client
+    from mcp import ClientSession
+
+    async def main():
+        async with sse_client("http://localhost:61208/mcp/sse") as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                # List available resources
+                resources = await session.list_resources()
+                print([str(r.uri) for r in resources.resources])
+
+                # Read CPU stats
+                from pydantic import AnyUrl
+                result = await session.read_resource(AnyUrl("glances://stats/cpu"))
+                print(result.contents[0].text)
+
+                # Run a health-summary prompt
+                prompt = await session.get_prompt("system_health_summary")
+                print(prompt.messages[0].content.text[:200])
+
+    asyncio.run(main())
+
+.. seealso::
+
+   :ref:`api_restful` — RESTful/JSON API documentation
+
+   :ref:`cmds` — full command-line reference

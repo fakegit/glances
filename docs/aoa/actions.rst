@@ -1,9 +1,9 @@
 .. _actions:
 
 Actions
-=======
+========
 
-Glances can trigger actions on events.
+Glances can trigger actions on events for warning and critical thresholds.
 
 By ``action``, we mean all shell command line. For example, if you want
 to execute the ``foo.py`` script if the last 5 minutes load are critical
@@ -16,7 +16,27 @@ then add the ``_action`` line to the Glances configuration file:
     critical_action=python /path/to/foo.py
 
 All the stats are available in the command line through the use of the
-`{{mustache}}`_ syntax. `Chevron`_ is required to render the mustache's template syntax.
+`Mustache`_ syntax. `Chevron`_ is required to render the mustache's template syntax.
+
+For a plugin with several items (network interfaces, file systems,
+containers, processes...), the stats are the ones of the item in alert.
+
+Additionaly to the stats of the current plugin, the following variables are
+also available:
+
+- ``{{_glances_timestamp}}``: current time in ISO 8601 format (UTC)
+- ``{{_glances_hostname}}``: hostname of the Glances instance
+- ``{{_glances_plugin}}``: plugin name (``mem``, ``fs``...)
+- ``{{_glances_level}}``: alert level (``warning`` or ``critical``)
+
+The action key can be set for a whole plugin section or restricted to a
+given stat and/or item. The most specific key wins:
+
+1. ``<item>_<stat>_<level>_action`` (example: ``wlan0_bytes_recv_critical_action``
+   in the ``[network]`` section)
+2. ``<stat>_<level>_action`` (example: ``user_critical_action`` in the
+   ``[cpu]`` section)
+3. ``<level>_action`` (example: ``critical_action``)
 
 Another example would be to create a log file
 containing used vs total disk space if a space trigger warning is
@@ -26,18 +46,60 @@ reached:
 
     [fs]
     warning=70
-    warning_action=echo {{mnt_point}} {{used}}/{{size}} > /tmp/fs.alert
-    
-A last example would be to create a log file
-containing the total user disk space usage for a device and notify by email each time a space trigger critical is
-reached:
-    
+    warning_action=python /path/to/fs-warning.py {{mnt_point}} {{used}} {{size}}
+
+.. note::
+
+    For security reasons, the command line is split into arguments
+    **before** the Mustache fields are rendered. Each field therefore
+    always produces **exactly one argument**, whatever its value contains:
+    a value holding spaces, quotes or shell operators can neither split
+    itself into several arguments nor inject new ones into the invoked
+    process.
+
+    Two consequences:
+
+    - **Quoting a Mustache field is unnecessary.** ``script.sh
+      {{mnt_point}}`` passes a mount point containing spaces as a single
+      argument. Quoting it (``script.sh "{{mnt_point}}"``) is harmless but
+      no longer needed.
+    - **A Mustache section must open and close within the same
+      argument.** ``{{#cmdline}}{{.}},{{/cmdline}}`` is valid;
+      ``{{#cmdline}}{{.}} {{/cmdline}}`` is not, and the action is not
+      executed (an error is logged).
+
+    A field that renders to an empty string still produces an empty
+    argument, so an empty value never shifts the positional arguments of
+    the invoked script.
+
+    Mustache-rendered values are also sanitized as defence in depth: the
+    characters ``&&``, ``|``, ``>`` and ``>>`` are replaced by spaces.
+
+    As a consequence, **shell operators (pipes, redirections, command
+    chaining) cannot be used inside a Mustache value**. They keep working
+    when you write them in the command line itself. If your action
+    requires operators driven by the stats, write a shell script and call
+    it from the action instead.
+
+For example, to create a log file containing the total user disk
+space usage for a device and notify by email each time a space trigger
+critical is reached, create a shell script ``/etc/glances/actions.d/fs-critical.sh``:
+
+.. code-block:: bash
+
+    #!/bin/bash
+    # Usage: fs-critical.sh <time> <device_name> <percent>
+    echo "$1 $2 $3" > /var/log/glances/fs.alert
+    python /etc/glances/actions.d/fs-critical.py
+
+Then reference it in the configuration file:
+
 .. code-block:: ini
 
     [fs]
     critical=90
-    critical_action_repeat=echo {{device_name}} {{percent}} > /tmp/fs.alert && python /etc/glances/actions.d/fs-critical.py
-    
+    critical_action_repeat=/etc/glances/actions.d/fs-critical.sh {{_glances_timestamp}} {{device_name}} {{percent}}
+
 Within ``/etc/glances/actions.d/fs-critical.py``:
 
 .. code-block:: python
@@ -45,7 +107,7 @@ Within ``/etc/glances/actions.d/fs-critical.py``:
     import subprocess
     from requests import get
 
-    fs_alert = open('/tmp/fs.alert', 'r').readline().strip().split(' ')
+    fs_alert = open('/var/log/glances/fs.alert', 'r').readline().strip().split(' ')
     device = fs_alert[0]
     percent = fs_alert[1]
     system = subprocess.check_output(['uname', '-rn']).decode('utf-8').strip()
@@ -55,13 +117,10 @@ Within ``/etc/glances/actions.d/fs-critical.py``:
     ps = subprocess.Popen(('echo', '-e', body), stdout=subprocess.PIPE)
     subprocess.call(['mail', '-s', 'CRITICAL: disk usage above 90%', '-r', 'postmaster@example.com', 'glances@example.com'], stdin=ps.stdout)
 
-
-
-
 .. note::
+
     You can use all the stats for the current plugin. See
-    https://github.com/nicolargo/glances/wiki/The-Glances-RESTFULL-JSON-API
-    for the stats list.
+    :ref:`api_restful` for the stats list.
 
 It is also possible to repeat action until the end of the alert.
 Keep in mind that the command line is executed every refresh time so
@@ -73,5 +132,37 @@ use with caution:
     critical=5.0
     critical_action_repeat=/home/myhome/bin/bipper.sh
 
-.. _{{mustache}}: https://mustache.github.io/
+An action is never started twice at the same time for the same stat: while
+a previous run of the same command is still in progress, the next trigger
+is skipped (a warning is logged once). Actions have no time limit by
+default. To kill a command that runs for too long, set a timeout, in
+seconds, in the ``[alerts]`` section:
+
+.. code-block:: ini
+
+    [alerts]
+    action_timeout=60
+
+A few rules keep a command safe when the values come from monitored data
+(process names, container names, mount points):
+
+- ``{{name}}`` HTML-escapes the value (``a&b`` becomes ``a&amp;b``); write
+  ``{{{name}}}`` (triple braces) for a name or a path.
+- A value always lands in exactly one argument of the command, whatever it
+  contains, but a value starting with ``-`` is still read as an option by the
+  command: write ``ls -- {{{name}}}``.
+- One redirection per command, either ``>`` (truncate) or ``>>`` (append).
+  Write the file in a folder owned by the user running Glances
+  (``/var/log/glances`` in the examples), never in a shared folder such as
+  ``/tmp``. The target is never written through a symbolic link, and a
+  rendered value in the target may only pick a file name: the command is
+  refused when it introduces a ``/``, a ``..`` component or a NUL.
+
+With ``--disable-config-exec``, the shell operators (``&&``, ``|``,
+``>``) of an action command are no longer interpreted, as for the AMP
+commands. The command itself still runs, and a command that starts a shell
+(``sh -c "..."``) still interprets what it is given: see the warning in
+:ref:`amps`. The option is not a sandbox.
+
+.. _Mustache: https://mustache.github.io/
 .. _Chevron: https://github.com/noahmorrison/chevron

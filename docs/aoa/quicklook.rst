@@ -4,7 +4,7 @@ Quick Look
 ==========
 
 The ``quicklook`` plugin is only displayed on wide screen and proposes a
-bar view for CPU and memory (virtual and swap).
+bar view for cpu, memory, swap, load and gpu (this list is configurable).
 
 In the terminal interface, click on ``3`` to enable/disable it.
 
@@ -14,22 +14,21 @@ If the per CPU mode is on (by clicking the ``1`` key):
 
 .. image:: ../_static/quicklook-percpu.png
 
-In the Curses/terminal interface, it is also possible to switch from bar to
-sparkline using 'S' hot key or --sparkline command line option (nned the
-sparklines Python lib on your system). Please be aware that sparklines use
-the Glances history and will not be available if the history is disabled from
-the command line.
-
-.. image:: ../_static/sparkline.png
+In the terminal interface, click on ``4`` to display the quicklook plugin
+in full width (the other plugins of the top row are hidden).
 
 .. note::
     Limit values can be overwritten in the configuration file under
     the ``[quicklook]`` section.
 
-You can also configure the percentage char used in the terminal user interface.
+You can also configure the stats list and the bat character used in the
+user interface.
 
 .. code-block:: ini
 
     [quicklook]
+    # Stats list (default is cpu,mem,load)
+    # Available stats are: cpu,mem,load,swap,gpu_proc,gpu_mem
+    list=cpu,mem,load
     # Graphical percentage char used in the terminal user interface (default is |)
-    percentage_char=@
+    bar_char=|

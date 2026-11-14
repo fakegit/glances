@@ -1,0 +1,100 @@
+.. _containers:
+
+Containers
+==========
+
+If you use ``containers``, Glances can help you to monitor your Docker, Podman,
+or LXD containers. Glances uses the containers API through the `docker-py`_,
+`podman-py`_, and `pylxd`_ libraries.
+
+You can install this dependency using:
+
+.. code-block:: console
+
+    pip install glances[containers]
+
+.. image:: ../_static/containers.png
+
+Note: Memory usage is compute as following "display memory usage = memory usage - inactive_file"
+
+It is possible to define limits and actions from the configuration file
+under the ``[containers]`` section:
+
+.. code-block:: ini
+
+    [containers]
+    disable=False
+    # Only show specific containers (comma-separated list of container name or regular expression)
+    show=thiscontainer,andthisone,andthoseones.*
+    # Hide some containers (comma-separated list of container name or regular expression)
+    hide=donotshowthisone,andthose.*
+    # Show only specific containers (comma-separated list of container name or regular expression)
+    #show=showthisone,andthose.*
+    # Define the maximum containers size name (default is 20 chars)
+    max_name_size=20
+    # List of stats to disable (not display)
+    # Following stats can be disabled: name,status,uptime,cpu,mem,diskio,networkio,ports,command
+    disable_stats=command
+    # Global containers' thresholds for CPU and MEM (in %)
+    cpu_careful=50
+    cpu_warning=70
+    cpu_critical=90
+    mem_careful=20
+    mem_warning=50
+    mem_critical=70
+    # Per container thresholds
+    containername_cpu_careful=10
+    containername_cpu_warning=20
+    containername_cpu_critical=30
+    containername_cpu_percent_critical_action=/etc/glances/actions.d/container-alert.sh {{image}} {{id}} {{cpu_percent}} {{name}}
+    # By default, Glances only display running containers
+    # Set the following key to True to display all containers
+    all=False
+    # Comma-separated list of URLs / socket endpoints for each engine
+    # Setting a key to empty (e.g. docker_urls=) explicitly disables that engine
+    #docker_urls=unix:///var/run/docker.sock,tcp://192.168.1.100:2375
+    #podman_urls=unix:///run/user/1000/podman/podman.sock
+    #lxd_urls=unix:///var/snap/lxd/common/lxd/unix.socket
+    # Define Podman sock (legacy fallback if podman_urls is not set)
+    #podman_sock=unix:///run/user/1000/podman/podman.sock
+
+.. note::
+
+    CPU and MEM alerts are raised **per container** and fire on ``warning``
+    and above; ``careful`` is colour-only (no history entry, no action). The
+    threshold keys are unchanged from earlier releases:
+    ``cpu_careful/cpu_warning/cpu_critical``,
+    ``mem_careful/mem_warning/mem_critical``, and the per-container overrides
+    ``<name>_cpu_*`` / ``<name>_mem_*``. MEM thresholds are evaluated as a
+    percentage of each container's memory **limit**. Action keys use the
+    stat names instead: ``<name>_cpu_percent_<level>_action`` and
+    ``<name>_memory_percent_<level>_action``.
+    ``disable_stats`` accepts any of
+    ``name,status,uptime,cpu,mem,diskio,networkio,ports,command``.
+
+You can use all the variables ({{foo}}) available in the containers plugin.
+
+.. note::
+
+    Shell operators (``&&``, ``|``, ``>``, ``>>``) can not be used inside a
+    Mustache value (and are not interpreted at all with the
+    ``--disable-config-exec`` option). If your action requires pipes or
+    redirections, write a shell script and call it from the action.
+    For example, create ``/etc/glances/actions.d/container-alert.sh``:
+
+    .. code-block:: bash
+
+        #!/bin/bash
+        # Usage: container-alert.sh <image> <id> <cpu> <name>
+        echo "$1 $2 $3" > "/tmp/container_$4.alert"
+
+    See :ref:`actions` for details.
+
+Filtering (for hide or show) is based on regular expression. Please be sure that your regular
+expression works as expected. You can use an online tool like `regex101`_ in
+order to test your regular expression.
+
+.. _regex101: https://regex101.com/
+.. _docker-py: https://github.com/containers/containers-py
+.. _podman-py: https://github.com/containers/podman-py
+.. _pylxd: https://github.com/canonical/pylxd

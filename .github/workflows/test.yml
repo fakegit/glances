@@ -1,0 +1,172 @@
+# Run unitary test
+
+name: test
+
+on:
+  workflow_call:
+
+jobs:
+
+  source-code-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # - name: Check formatting with Ruff
+      #   uses: chartboost/ruff-action@e18ae971ccee1b2d7bbef113930f00c670b78da4 # v1
+      #   with:
+      #     args: 'format --check'
+
+      - name: Check linting with Ruff
+        uses: chartboost/ruff-action@e18ae971ccee1b2d7bbef113930f00c670b78da4 # v1
+        with:
+          args: 'check'
+
+      # - name: Static type check
+      #   run: |
+      #     echo "Skipping static type check for the moment, too much error...";
+      #     # pip install pyright
+      #     # pyright glances
+
+
+  test-linux:
+
+    # The whole suite: Python tests, the WebUI JavaScript tests (through
+    # tests/test_webui_js.py, node is on the runner) and the WebUI in a real
+    # browser (tests/test_webui_browser*.py, Playwright and Chromium).
+
+    needs: source-code-checks
+    # https://github.com/actions/runner-images?tab=readme-ov-file#available-images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        # Python EOL version are note tested
+        # Multiple Python version only tested for Linux
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    permissions:
+      contents: read
+
+    steps:
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install ".[all]" pytest pytest-asyncio docutils playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Unitary tests
+        run: |
+          python -m pytest tests/
+
+  test-windows:
+
+    needs: source-code-checks
+    # https://github.com/actions/runner-images?tab=readme-ov-file#available-images
+    runs-on: windows-2025
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.14"]
+
+    permissions:
+      contents: read
+
+    steps:
+
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install ".[all]" pytest pytest-asyncio docutils
+
+    - name: Unitary tests
+      run: |
+        python -m pytest tests/
+
+  test-macos:
+
+    needs: source-code-checks
+    # https://github.com/actions/runner-images?tab=readme-ov-file#available-images
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        # Only test the latest stable version
+        python-version: ["3.14"]
+
+    permissions:
+      contents: read
+
+    steps:
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install ".[all]" pytest pytest-asyncio docutils
+
+      - name: Unitary tests
+        run: |
+          python -m pytest tests/
+
+  test-freebsd:
+
+    needs: source-code-checks
+    # FreeBSD is not offered by the GitHub-hosted runners, so the tests run in
+    # a FreeBSD VM booted under QEMU/KVM on a Linux runner. The whole job has
+    # to live in a single vmactions step: each step starts its own VM, so
+    # installing dependencies in one step and running pytest in another would
+    # run pytest in a VM that never saw the dependencies.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+
+    steps:
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Unitary tests
+        uses: vmactions/freebsd-vm@77ed28d336d03fe19a3f4f7266c1d2c4714dd79d # v1.5.2
+        with:
+          usesh: true
+          cache-after-prepare: true
+          prepare: |
+            pkg install -y python3 gcc devel/py-pip devel/py-pytest devel/py-pytest-asyncio sysutils/py-psutil www/py-fastapi www/py-uvicorn www/py-httpx www/py-requests devel/py-Jinja2 www/py-pyjwt
+          run: |
+            set -e
+            python3 --version
+            # The dependencies come from FreeBSD packages: pip would build the
+            # ones without FreeBSD wheels (pydantic-core, matplotlib's build
+            # chain, ...) from source and the job would time out. Glances itself
+            # is installed without dependencies; the tests of an optional
+            # module that is not packaged skip themselves.
+            python3 -m pip install --break-system-packages --no-deps .
+            python3 -m pytest tests/

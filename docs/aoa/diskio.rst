@@ -5,20 +5,16 @@ Disk I/O
 
 .. image:: ../_static/diskio.png
 
-Glances displays the disk I/O throughput. The unit is adapted
-dynamically.
-
-You can display:
-
-- bytes per second (default behavor / Bytes/s, KBytes/s, MBytes/s, etc)
+Glances displays the disk I/O throughput, count and mean latency:
+- bytes per second (default behavior / Bytes/s, KBytes/s, MBytes/s, etc)
 - requests per second (using --diskio-iops option or *B* hotkey)
+- mean latency (using --diskio-latency option or *L* hotkey)
 
-There is no alert on this information.
+It's also possible to define:
 
-It's possible to define:
-
+- a list of disk to show (white list)
 - a list of disks to hide
-- aliases for disk name
+- aliases for disk name  (use \ to espace special characters)
 
 under the ``[diskio]`` section in the configuration file.
 
@@ -29,3 +25,68 @@ and the specific ``sda5`` partition:
 
     [diskio]
     hide=sda5,loop.*
+
+or another example:
+
+.. code-block:: ini
+
+    [diskio]
+    show=sda.*
+
+Filtering is based on regular expression. Please be sure that your regular
+expression works as expected. You can use an online tool like `regex101`_ in
+order to test your regular expression.
+
+.. note::
+
+    When a disk has an ``alias`` defined, the ``hide`` and ``show`` patterns
+    are evaluated against **both** the original device name and its alias,
+    and the disk is hidden (or shown) if **either** matches. This means a
+    "negative-lookahead" allow-list pattern such as
+    ``hide=^(?!(?:nvme[0-9]+n[0-9]+$|sd[a-z]+$)).*`` will inadvertently match
+    aliases that do not follow the device naming scheme (e.g. ``my_data_disk``)
+    and therefore hide every aliased disk. Prefer ``show=`` for allow-list
+    semantics, or write explicit ``hide=`` patterns that target the names you
+    actually want to exclude.
+
+It is also possible to define thesholds for latency and bytes read and write per second:
+
+.. code-block:: ini
+
+    [diskio]
+    # Alias for sda1 and sdb1
+    #alias=sda1:SystemDisk,sdb1:DataDisk
+    # Default latency thresholds (in ms) (rx = read / tx = write)
+    rx_latency_careful=10
+    rx_latency_warning=20
+    rx_latency_critical=50
+    tx_latency_careful=10
+    tx_latency_warning=20
+    tx_latency_critical=50
+    # Set thresholds (in bytes per second) for all disks
+    #read_bytes_careful=50000000
+    #write_bytes_careful=50000000
+    # Set thresholds (in bytes per second) for a given disk name
+    dm-0_read_bytes_careful=4000000000
+    dm-0_read_bytes_warning=5000000000
+    dm-0_read_bytes_critical=6000000000
+    dm-0_read_bytes_log=True
+    dm-0_write_bytes_careful=700000000
+    dm-0_write_bytes_warning=900000000
+    dm-0_write_bytes_critical=1000000000
+    dm-0_write_bytes_log=True
+
+There is no default threshold: disk I/O alerts are only raised when
+thresholds are defined in the configuration file.
+
+You also can automatically hide disk with no read or write using the
+``hide_zero`` configuration key. The optional ``hide_threshold_bytes`` option
+can also be used to set a threshold higher than zero.
+
+.. code-block:: ini
+
+    [diskio]
+    hide_zero=True
+    hide_threshold_bytes=0
+
+.. _regex101: https://regex101.com/

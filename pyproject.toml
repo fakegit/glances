@@ -1,0 +1,277 @@
+[project]
+authors = [{name = "Nicolas Hennion", email = "nicolas@nicolargo.com"}]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console :: Curses",
+  "Environment :: Web Environment",
+  "Framework :: FastAPI",
+  "Intended Audience :: Developers",
+  "Intended Audience :: End Users/Desktop",
+  "Intended Audience :: System Administrators",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: System :: Monitoring",
+]
+dependencies = [
+  "psutil>=5.6.7",
+  "requests>=2.32.4",
+  "windows-curses; platform_system == 'Windows'",
+  "shtab; platform_system != 'Windows'",
+  "jinja2>=3.1.6",
+]
+description = "An all-in-one system monitoring tool"
+dynamic = ["version"]
+keywords = ["cli", "curses", "monitoring", "system"]
+license = "LGPL-3.0-only"
+name = "Glances"
+readme = "README-pypi.rst"
+requires-python = ">=3.10"
+urls.Homepage = "https://github.com/nicolargo/glances"
+
+[dependency-groups]
+dev = [
+  "codespell",
+  "fonttools>=4.43.0",
+  "gprof2dot",
+  "matplotlib",
+  "memray>=1.19.2; platform_system != 'Windows'",
+  "memory-profiler",
+  "numpy>=1.22.2",
+  "pillow>=10.0.1",
+  "pre-commit",
+  "pyinstrument>=5.1.2",
+  "playwright",
+  "pyright",
+  "pytest",
+  "pytest-asyncio",
+  "requirements-parser",
+  "reuse",
+  "rstcheck",
+  "ruff",
+  "semgrep",
+  "setuptools>=65.5.1",
+  "sphinx",
+  "sphinx_rtd_theme",
+]
+
+[project.optional-dependencies]
+action = ["chevron"]
+# all but not dev
+all = ["glances[action,browser,cloud,containers,export,gpu,graph,mcp,raid,sensors,smart,web,wifi]"]
+browser = ["zeroconf"]
+cloud = ["requests>=2.32.4"]
+containers = [
+  "docker>=6.1.1",
+  "packaging",
+  "podman",
+  "pylxd>=2.3.1",
+  "python-dateutil",
+  "six",
+]
+export = [
+  "bernhard",
+  "clickhouse-connect",
+  # "duckdb",  # Not added: no prebuilt package for Alpine Linux, so the Docker image build fails
+  "elasticsearch",
+  "graphitesender",
+  "ibmcloudant",
+  "influxdb-client",
+  "influxdb>=1.0.0",
+  "influxdb3-python",
+  "kafka-python",
+  "nats-py",
+  "paho-mqtt",
+  "pika",
+  "potsdb",
+  "prometheus_client",
+  "psycopg[binary]",
+  "pycouchdb",
+  "pymongo",
+  "pyzmq",
+  "statsd",
+]
+gpu = ["nvidia-ml-py"]
+graph = ["pygal"]
+mcp = ["mcp>=1.23.0,<3"]
+raid = ["pymdstat"]
+sensors = ["batinfo; platform_system == 'Linux'"]
+smart = ["pySMART"]
+web = [
+  "fastapi>=0.82.0",
+  "msgpack>=1.2.3; platform_system != 'Windows'",
+  "PyJWT>=2.10.0",
+  "requests>=2.32.4",
+  # Not used directly: a floor under what fastapi pulls in (CVE-2025-62727,
+  # FileResponse Range header, reachable through the WebUI's static files).
+  "starlette>=0.49.1",
+  "uvicorn",
+]
+wifi = ["wifi"]
+
+[project.scripts]
+glances = "glances:main"
+
+[tool.setuptools.data-files]
+"share/doc/glances" = [
+  "AUTHORS",
+  "COPYING",
+  "NEWS.rst",
+  "README.rst",
+  "README-pypi.rst",
+  "SECURITY.md",
+  "CONTRIBUTING.md",
+  "conf/glances.conf",
+  "conf/fetch-templates/*.jinja",
+]
+"share/man/man1" = ["docs/man/glances.1"]
+
+[tool.setuptools.dynamic]
+version = {attr = "glances.__version__"}
+
+[tool.setuptools.packages.find]
+exclude = ["*__pycache__*", "glances.outputs.static.node_modules*"]
+include = ["glances*"]
+where = ["."]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.format]
+quote-style = "preserve"
+
+[tool.ruff.lint]
+# Enable pycodestyle (`E`) and Pyflakes (`F`) codes by default.
+ignore = ["N801", "N802", "N803", "N805", "N806", "N807", "N811", "N812", "N813", "N814", "N815", "N816", "N817", "N818"]
+select = [
+  #    "A",
+  #    "B",
+  #    "S",
+  "C90", # mccabe
+  "E", # pycodestyle
+  "F", # Pyflakes
+  "I", # isort
+  "N", # pep8-naming
+  "W", # pycodestyle
+  "UP", # pyupgrde
+  "C4", # flake8-comprehensions
+  "RET", # flake8-return
+  #    "PL",
+  #    "FBT", # flake8-boolean-trap
+  #    "RUF", # Ruff-specific rules
+  #    "PERF", # Perflint
+]
+
+# Allow autofix for all enabled rules (when `--fix`) is provided.
+fixable = [
+  "A",
+  "B",
+  "C",
+  "D",
+  "E",
+  "F",
+  "G",
+  "I",
+  "N",
+  "Q",
+  "S",
+  "T",
+  "W",
+  "ANN",
+  "ARG",
+  "BLE",
+  "COM",
+  "DJ",
+  "DTZ",
+  "EM",
+  "ERA",
+  "EXE",
+  "FBT",
+  "ICN",
+  "INP",
+  "ISC",
+  "NPY",
+  "PD",
+  "PGH",
+  "PIE",
+  "PL",
+  "PT",
+  "PTH",
+  "PYI",
+  "RET",
+  "RSE",
+  "RUF",
+  "SIM",
+  "SLF",
+  "TCH",
+  "TID",
+  "TRY",
+  "UP",
+  "YTT",
+]
+unfixable = []
+
+# Exclude a variety of commonly ignored directories.
+exclude = [
+  ".bzr",
+  ".direnv",
+  ".eggs",
+  ".git",
+  ".hg",
+  ".mypy_cache",
+  ".nox",
+  ".pants.d",
+  ".pytype",
+  ".ruff_cache",
+  ".svn",
+  ".tox",
+  ".venv",
+  "__pypackages__",
+  "_build",
+  "buck-out",
+  "build",
+  "dist",
+  "node_modules",
+  "venv",
+  "venv-dev",
+  "venv-min",
+  "docs",
+  "tests-data",
+  "./glances/outputs/static/*",
+]
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.mccabe]
+# Unlike Flake8, default to a complexity level of 10.
+max-complexity = 21
+
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools>=68"]
+
+[tool.pytest.ini_options]
+# Set to true to display live message during tests
+log_cli = false
+log_level = "INFO"
+#log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
+#log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+# v5 tests use async functions; auto mode avoids per-test @pytest.mark.asyncio.
+asyncio_mode = "auto"
+# Some v5 tests import shared helpers as `tests.<module>`: the editable install
+# only maps `glances`, so the repo root must be on sys.path explicitly.
+pythonpath = ["."]
+
+[tool.flake8]
+max-line-length = 120
+
+[tool.uv.workspace]
+members = [
+  "venv-min",
+]

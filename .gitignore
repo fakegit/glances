@@ -23,9 +23,11 @@ local.properties
 .classpath
 .settings/
 .loadpath
+.ipynb_checkpoints/
 
 # External tool builders
 .externalToolBuilders/
+*yarn.lock
 
 # Locally stored "Eclipse launch configurations"
 *.launch
@@ -51,6 +53,7 @@ bower_components/
 
 # visual stdio code
 .vscode/
+.vs/
 
 # Snap packaging specific
 /snap/.snapcraft/
@@ -60,3 +63,18 @@ bower_components/
 
 /*.snap
 /*_source.tar.bz2
+
+# Virtual env
+.venv-uv/
+.venv/
+.python-version
+
+# Test
+.coverage
+tests-data/issues/*/config/
+
+# Local SSL certificates
+glances.local*.pem
+
+# Claudio
+.claude/settings.local.json

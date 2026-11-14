@@ -1,17 +1,67 @@
-version: '3.7'
 services:
   glances:
-    build:
-      context: ./
-      dockerfile: Dockerfile
+    # See all images tags here: https://hub.docker.com/r/nicolargo/glances/tags
+    image: nicolargo/glances:latest-full
     restart: always
-    ports:
-      - "61208:61208"
-      # - "61209:61209"
-    environment:
-      # - GLANCES_OPT="-w"
-      GLANCES_OPT: "-w"
-    volumes:
-      - "/var/run/docker.sock:/var/run/docker.sock:ro"
-      - "./glances.conf:/glances/conf/glances.conf"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:61208/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
     pid: "host"
+    # Host networking exposes the REST API / WebUI on every interface of the
+    # host, unauthenticated by default: on a shared network set [outputs]
+    # password and webui_allowed_hosts in ./glances.conf, or replace
+    # network_mode by `ports: ["61208:61208"]` (the network plugin then sees
+    # the container's interfaces only).
+    network_mode: "host"
+
+    read_only: true
+    privileged: false
+    # Uncomment next line for SATA or NVME smartctl monitoring
+    # cap_add:
+      # Uncomment next line for SATA smartctl monitoring
+      # - SYS_RAWIO
+      # Uncomment next line for NVME smartctl monitoring
+      # - SYS_ADMIN
+    # devices:
+    #   - "/dev/nvme0"
+
+    volumes:
+      - "/:/rootfs:ro"
+      # `:ro` protects the socket file, not the Docker API behind it: whoever
+      # controls this container controls the Docker daemon.
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      # Uncomment for qemu/libvirt/kvm support with modular libvirt daemons
+      # - "/var/run/libvirt/virtqemud-sock:/var/run/libvirt/libvirt-sock:ro"
+      # OR monolithic libvirt daemon
+      # - "/var/run/libvirt/libvirt-sock:/var/run/libvirt/libvirt-sock:ro"
+      - "/run/user/1000/podman/podman.sock:/run/user/1000/podman/podman.sock:ro"
+      - "./glances.conf:/glances/conf/glances.conf"
+      # Uncomment for proper distro information in upper panel.
+#     # Works only for distros that do have this file (most of distros do).
+#      - "/etc/os-release:/etc/os-release:ro"
+
+    tmpfs:
+      - /tmp
+
+    environment:
+      - GLANCES_OPT=-C /glances/conf/glances.conf -w --enable-mcp --enable-plugin smart
+      # Please set to your local timezone (or use local ${TZ} environment variable if set on your host)
+      - TZ=Europe/Paris
+      - PYTHONPYCACHEPREFIX=/tmp/py_caches
+
+#     # Uncomment for GPU compatibility (Nvidia) inside the container
+#     deploy:
+#       resources:
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               count: 1
+#               capabilities: [gpu]
+
+    # To protect the REST API and the WebUI by a password, set [outputs] password
+    # in ./glances.conf to the hash printed by `glances --set-password`.

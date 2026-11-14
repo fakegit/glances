@@ -1,117 +1,109 @@
-# -*- coding: utf-8 -*-
 #
 # This file is part of Glances.
 #
-# Copyright (C) 2019 Nicolargo <nicolas@nicolargo.com>
+# SPDX-FileCopyrightText: 2022 Nicolas Hennion <nicolas@nicolargo.com>
 #
-# Glances is free software; you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
+# SPDX-License-Identifier: LGPL-3.0-only
 #
-# Glances is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Lesser General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 """Custom logger class."""
 
-import os
 import json
-import getpass
-import tempfile
-
 import logging
 import logging.config
+import logging.handlers
+import os
 
-from glances.globals import BSD, LINUX, MACOS, SUNOS, WINDOWS, WSL
-from glances.globals import safe_makedirs
+from glances.globals import trusted_by_root
 
-# Choose the good place for the log file (see issue #1575)
-# Default root path
-if 'HOME' in os.environ:
-    _XDG_CACHE_HOME = os.path.join(os.environ['HOME'], '.local', 'share')
-else:
-    _XDG_CACHE_HOME = ''
-# Define the glances log file
-if 'XDG_CACHE_HOME' in os.environ \
-        and os.path.isdir(os.environ['XDG_CACHE_HOME']) \
-        and os.access(os.environ['XDG_CACHE_HOME'], os.W_OK):
-    safe_makedirs(os.path.join(os.environ['XDG_CACHE_HOME'], 'glances'))
-    LOG_FILENAME = os.path.join(os.environ['XDG_CACHE_HOME'], 'glances', 'glances.log')
-elif os.path.isdir(_XDG_CACHE_HOME) and os.access(_XDG_CACHE_HOME, os.W_OK):
-    safe_makedirs(os.path.join(_XDG_CACHE_HOME, 'glances'))
-    LOG_FILENAME = os.path.join(_XDG_CACHE_HOME, 'glances', 'glances.log')
-else:
-    LOG_FILENAME = os.path.join(tempfile.gettempdir(),
-                                'glances-{}.log'.format(getpass.getuser()))
+
+def _log_folder():
+    """The folder of the log file, private to the user, or None when none can be made.
+
+    Never a shared temporary folder: there, as root, another user can plant a
+    link where the log is opened, and the log is readable by all (security
+    audit 2026-10-04, M8). `$XDG_CACHE_HOME/glances` first (issue #1575), then
+    `~/.local/share/glances`, `~` resolved from the password database when
+    `$HOME` is not set. As root, a candidate owned by another user (`sudo -E`
+    keeps `$HOME` and `$XDG_CACHE_HOME`) is skipped (security audit
+    2026-10-17, X-2).
+    """
+    candidates = []
+    xdg_cache_home = os.environ.get('XDG_CACHE_HOME')
+    if xdg_cache_home and os.path.isdir(xdg_cache_home) and os.access(xdg_cache_home, os.W_OK):
+        candidates.append(os.path.join(xdg_cache_home, 'glances'))
+    home = os.path.expanduser('~')
+    if os.path.isabs(home):
+        candidates.append(os.path.join(home, '.local', 'share', 'glances'))
+    for folder in candidates:
+        try:
+            os.makedirs(folder, mode=0o700, exist_ok=True)
+        except OSError:
+            continue
+        if os.access(folder, os.W_OK) and trusted_by_root(folder):
+            return folder
+    return None
+
+
+class PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """A rotating log file readable by its owner only.
+
+    A link at the log file is not followed, and the mode of a file the
+    process does not own is left alone: as root, a link planted in the log
+    folder sent the log elsewhere and made its target 0600 (security audit
+    2026-10-17, X-2).
+    """
+
+    def _open(self):
+        def opener(path, flags):
+            fd = os.open(path, flags | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+            # Windows has neither fchmod nor geteuid: the mode is left alone there.
+            if hasattr(os, 'fchmod') and hasattr(os, 'geteuid') and os.fstat(fd).st_uid == os.geteuid():
+                # A file left by an older Glances keeps the mode it was created with.
+                os.fchmod(fd, 0o600)
+            return fd
+
+        return open(self.baseFilename, self.mode, encoding=self.encoding, errors=self.errors, opener=opener)
+
+
+_LOG_FOLDER = _log_folder()
+# None when no private folder could be made: the file handler is then a no-op.
+LOG_FILENAME = os.path.join(_LOG_FOLDER, 'glances.log') if _LOG_FOLDER else None
 
 # Define the logging configuration
 LOGGING_CFG = {
     "version": 1,
-    "disable_existing_loggers": "False",
-    "root": {
-        "level": "INFO",
-        "handlers": ["file", "console"]
-    },
+    "disable_existing_loggers": False,
+    "root": {"level": "INFO", "handlers": ["file", "console"]},
     "formatters": {
-        "standard": {
-            "format": "%(asctime)s -- %(levelname)s -- %(message)s"
-        },
-        "short": {
-            "format": "%(levelname)s -- %(message)s"
-        },
-        "long": {
-            "format": "%(asctime)s -- %(levelname)s -- %(message)s (%(funcName)s in %(filename)s)"
-        },
-        "free": {
-            "format": "%(message)s"
-        }
+        "standard": {"format": "%(asctime)s -- %(levelname)s -- %(message)s"},
+        "short": {"format": "%(levelname)s -- %(message)s"},
+        "long": {"format": "%(asctime)s -- %(levelname)s -- %(message)s (%(funcName)s in %(filename)s)"},
+        "free": {"format": "%(message)s"},
     },
     "handlers": {
         "file": {
             "level": "DEBUG",
-            "class": "logging.handlers.RotatingFileHandler",
+            # The class itself, not its dotted name: this module is still
+            # being imported when `glances_logger()` below applies the config.
+            "()": PrivateRotatingFileHandler,
             "maxBytes": 1000000,
             "backupCount": 3,
             "formatter": "standard",
-            "filename": LOG_FILENAME
-        },
-        "console": {
-            "level": "CRITICAL",
-            "class": "logging.StreamHandler",
-            "formatter": "free"
+            "filename": LOG_FILENAME,
         }
+        if LOG_FILENAME
+        else {"level": "DEBUG", "class": "logging.NullHandler"},
+        "console": {"level": "CRITICAL", "class": "logging.StreamHandler", "formatter": "free"},
     },
     "loggers": {
-        "debug": {
-            "handlers": ["file", "console"],
-            "level": "DEBUG"
-        },
-        "verbose": {
-            "handlers": ["file", "console"],
-            "level": "INFO"
-        },
-        "standard": {
-            "handlers": ["file"],
-            "level": "INFO"
-        },
-        "requests": {
-            "handlers": ["file", "console"],
-            "level": "ERROR"
-        },
-        "elasticsearch": {
-            "handlers": ["file", "console"],
-            "level": "ERROR"
-        },
-        "elasticsearch.trace": {
-            "handlers": ["file", "console"],
-            "level": "ERROR"
-        }
-    }
+        "debug": {"handlers": ["file", "console"], "level": "DEBUG"},
+        "verbose": {"handlers": ["file", "console"], "level": "INFO"},
+        "standard": {"handlers": ["file"], "level": "INFO"},
+        "requests": {"handlers": ["file", "console"], "level": "ERROR"},
+        "elasticsearch": {"handlers": ["file", "console"], "level": "ERROR"},
+        "elasticsearch.trace": {"handlers": ["file", "console"], "level": "ERROR"},
+    },
 }
 
 
@@ -130,13 +122,26 @@ def glances_logger(env_key='LOG_CFG'):
 
     # Check if a specific configuration is available
     user_file = os.getenv(env_key, None)
+    untrusted_file = None
     if user_file and os.path.exists(user_file):
-        # A user file as been defined. Use it...
-        with open(user_file, 'rt') as f:
-            config = json.load(f)
+        if trusted_by_root(user_file):
+            # A user file as been defined. Use it...
+            with open(user_file) as f:
+                config = json.load(f)
+        else:
+            # As root, a logging configuration names the handler classes to
+            # load: it must not come from a file another user can write
+            # (security audit 2026-10-17, I-10, S-10).
+            untrusted_file = user_file
 
     # Load the configuration
     logging.config.dictConfig(config)
+    if untrusted_file:
+        _logger.warning(
+            "%s file %s ignored: running as root, it must be owned by root and not writable by others",
+            env_key,
+            untrusted_file,
+        )
 
     return _logger
 

@@ -5,6 +5,40 @@ InfluxDB
 
 You can export statistics to an ``InfluxDB`` server (time series server).
 
+In Glances version 3.2.0 and higher, the way Glances exports stats to
+InfluxDB changes. The following fields will be added as tags:
+
+- key stats (for example *interface_name* for network, container *name* for docker...)
+- hostname (shortname)
+- tags
+
+Glances InfluxDB data model:
+
++---------------+-----------------------+-----------------------+
+| Measurement   | Fields                | Tags                  |
++===============+=======================+=======================+
+| cpu           | user                  | hostname              |
+|               | system                |                       |
+|               | iowait...             |                       |
++---------------+-----------------------+-----------------------+
+| network       | bytes_recv            | hostname              |
+|               | bytes_sent            | interface_name        |
+|               | time_since_update...  |                       |
+|               |                       |                       |
++---------------+-----------------------+-----------------------+
+| diskio        | read_bytes            | hostname              |
+|               | write_bytes           | disk_name             |
+|               | time_since_update...  |                       |
+|               |                       |                       |
++---------------+-----------------------+-----------------------+
+| containers    | cpu_percent           | hostname              |
+|               | memory_usage...       | name                  |
++---------------+-----------------------+-----------------------+
+| gpu           | proc                  | hostname              |
+|               | mem                   | gpu_id                |
+|               | temperature...        |                       |
++---------------+-----------------------+-----------------------+
+
 InfluxDB (up to version 1.7.x)
 ------------------------------
 
@@ -24,13 +58,10 @@ following:
     # Ex: prefix=foo
     #     => foo.cpu
     #     => foo.mem
-    # You can also use dynamic values
-    #prefix=`hostname`
-    prefix=localhost
-    # Tags will be added for all measurements
+    #prefix=foo
+    # Following tags will be added for all measurements
+    # Note: hostname is always added as a tag
     #tags=foo:bar,spam:eggs
-    # You can also use dynamic values
-    #tags=system:`uname -s`
 
 and run Glances with:
 
@@ -42,13 +73,16 @@ Glances generates a lot of columns, e.g., if you have many running
 Docker containers, so you should use the ``tsm1`` engine in the InfluxDB
 configuration file (no limit on columns number).
 
-Note: if you want to use SSL, please set 'protocol=https'.
+Note: if you want to use SSL, please set 'protocol=https'. The server
+certificate is verified by default; set ``ssl_verify=false`` to skip the
+check (not recommended) or ``ssl_verify=/path/to/ca-bundle.crt`` to trust
+a private CA.
 
 
-InfluxDB v2 (from InfluxDB v1.8.x/Flux and InfluxDB v2.x)
----------------------------------------------------------
+InfluxDB v2 (from InfluxDB v1.8.x/Flux and InfluxDB <v3.x)
+----------------------------------------------------------
 
-Note: The InfluxDB v2 client (https://pypi.org/project/influxdb-client/) 
+Note: The InfluxDB v2 client (https://pypi.org/project/influxdb-client/)
 is only available for Python 3.6 or higher.
 
 The connection should be defined in the Glances configuration file as
@@ -56,24 +90,26 @@ following:
 
 .. code-block:: ini
 
-    [influxdb]
+    [influxdb2]
+    # Configuration for the --export influxdb2 option
+    # https://influxdb.com/
     host=localhost
     port=8086
     protocol=http
     org=nicolargo
     bucket=glances
-    token=EjFUTWe8U-MIseEAkaVIgVnej_TrnbdvEcRkaB1imstW7gapSqy6_6-8XD-yd51V0zUUpDy-kAdVD1purDLuxA==
+    token=PUT_YOUR_INFLUXDB2_TOKEN_HERE
+    # Set the interval between two exports (in seconds)
+    # If the interval is set to 0, the export refresh time is used (default behavor)
+    #interval=0
     # Prefix will be added for all measurement name
     # Ex: prefix=foo
     #     => foo.cpu
     #     => foo.mem
-    # You can also use dynamic values
-    #prefix=`hostname`
-    prefix=localhost
-    # Tags will be added for all measurements
+    #prefix=foo
+    # Following tags will be added for all measurements
+    # Note: hostname and name (for process) are always added as a tag
     #tags=foo:bar,spam:eggs
-    # You can also use dynamic values
-    #tags=system:`uname -s`
 
 and run Glances with:
 
@@ -81,12 +117,50 @@ and run Glances with:
 
     $ glances --export influxdb2
 
-Note: if you want to use SSL, please set 'protocol=https'.
+Note: if you want to use SSL, please set 'protocol=https'. The server
+certificate is verified by default; set ``ssl_verify=false`` to skip the
+check (not recommended) or ``ssl_verify=/path/to/ca-bundle.crt`` to trust
+a private CA.
+
+InfluxDB v3 (for InfluxDB 3.x)
+------------------------------
+
+Note: The InfluxDB v3 client (https://pypi.org/project/influxdb3-python/)
+is only available for Python 3.8 or higher.
+
+The connection should be defined in the Glances configuration file as
+following:
+
+.. code-block:: ini
+
+    [influxdb3]
+    # Configuration for the --export influxdb3 option
+    # https://influxdb.com/
+    host=http://localhost:8181
+    org=nicolargo
+    database=glances
+    token=PUT_YOUR_INFLUXDB3_TOKEN_HERE
+    # Prefix will be added for all measurement name
+    # Ex: prefix=foo
+    #     => foo.cpu
+    #     => foo.mem
+    #prefix=foo
+    # Following tags will be added for all measurements
+    # Note: hostname and name (for process) are always added as a tag
+    #tags=foo:bar,spam:eggs
+
+and run Glances with:
+
+.. code-block:: console
+
+    $ glances --export influxdb3
+
+Note: if you want to use SSL, please set host with 'https' scheme instead of 'http'.
 
 Grafana
 -------
 
-For Grafana users, Glances provides a dedicated `dashboard`_.
+For Grafana users, Glances provides a dedicated for `InfluxQL`_ or `Flux`_ InfluxDB datasource.
 
 .. image:: ../_static/glances-influxdb.png
 
@@ -94,4 +168,5 @@ To use it, just import the file in your ``Grafana`` web interface.
 
 .. image:: ../_static/grafana.png
 
-.. _dashboard: https://github.com/nicolargo/glances/blob/master/conf/glances-grafana.json
+.. _InfluxQL: https://github.com/nicolargo/glances/blob/master/conf/glances-grafana-influxql.json
+.. _Flux: https://github.com/nicolargo/glances/blob/master/conf/glances-grafana-flux.json

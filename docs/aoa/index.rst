@@ -15,7 +15,9 @@ Legend:
 =========== ============
 
 .. note::
-    Only stats with colored background will be shown in the alert view.
+    Only ``WARNING`` and ``CRITICAL`` levels are shown in the alert view
+    (see :ref:`events`). Stats with a colored background are the most
+    important ones for a given plugin.
 
 .. toctree::
    :maxdepth: 2
@@ -23,24 +25,27 @@ Legend:
    header
    quicklook
    cpu
-   gpu
    memory
    load
+   gpu
+   npu
+   mpp
    network
    connections
+   ip
    wifi
    ports
    diskio
    fs
    irq
    folders
+   cloud
    raid
    smart
    sensors
-   hddtemp
    ps
-   monitor
+   containers
+   vms
    amps
    events
-   docker
    actions
